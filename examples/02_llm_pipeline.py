@@ -1,8 +1,4 @@
-import sys
-import os
 
-# Add local path to sys.path if not running from proper module
-sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
 import asyncio
 from agentblocks.core.graph import WorkflowGraph
