@@ -1,7 +1,7 @@
 import asyncio
 from pydantic import BaseModel
-from agentblocks.core.block import Block
-from agentblocks.runtime.retry import with_retry
+from agenticblocks.core.block import Block
+from agenticblocks.runtime.retry import with_retry
 
 class FetchInput(BaseModel):
     url: str

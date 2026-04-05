@@ -1,3 +1,5 @@
 pydantic>=2.0.0
 networkx>=3.0
 tenacity>=8.0
+litellm>=1.0.0
+mcp>=1.0.0
