@@ -40,7 +40,7 @@ jobs:
     # Este ambiente (environment) corresponde à configuração opcional que você viu no PyPI.
     # Recomendado: crie também um "Environment" no GitHub (Settings -> Environments -> pypi).
     environment:
-      name: pypi
+      name: agenticblocks
       url: https://pypi.org/p/agenticblocks
       
     permissions:
