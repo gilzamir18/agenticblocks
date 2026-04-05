@@ -1,4 +1,4 @@
-# AgentBlocks 🧱
+# agenticblocks 🧱
 
 *A composable building block library for AI agent workflows. / Uma biblioteca componível para construir fluxos de agentes de IA.*
 
@@ -35,21 +35,21 @@ class HelloOutput(BaseModel):
 
 #### 2. Create the Logic Block
 ```python
-from agentblocks.core.block import Block
+from agenticblocks.core.block import Block
 
 class HelloWorldBlock(Block[HelloInput, HelloOutput]):
     name: str = "say_hello"
     
     async def run(self, input: HelloInput) -> HelloOutput:
-        msg = f"Hello, {input.name}! Welcome to AgentBlocks."
+        msg = f"Hello, {input.name}! Welcome to agenticblocks."
         return HelloOutput(greeting=msg)
 ```
 
 #### 3. Connect and Execute
 ```python
 import asyncio
-from agentblocks.core.graph import WorkflowGraph
-from agentblocks.runtime.executor import WorkflowExecutor
+from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.runtime.executor import WorkflowExecutor
 
 async def main():
     graph = WorkflowGraph()

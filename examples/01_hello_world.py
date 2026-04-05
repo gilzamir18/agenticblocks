@@ -5,9 +5,9 @@ import os
 
 import asyncio
 from pydantic import BaseModel
-from agentblocks.core.block import Block
-from agentblocks.core.graph import WorkflowGraph
-from agentblocks.runtime.executor import WorkflowExecutor
+from agenticblocks.core.block import Block
+from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.runtime.executor import WorkflowExecutor
 
 # 1. Definindo as Entradas e Saídas (Pydantic Models)
 class HelloInput(BaseModel):
@@ -22,7 +22,7 @@ class HelloWorldBlock(Block[HelloInput, HelloOutput]):
     
     async def run(self, input: HelloInput) -> HelloOutput:
         # Lógica real do bloco
-        msg = f"Hello, {input.name}! Welcome to AgentBlocks."
+        msg = f"Hello, {input.name}! Welcome to agenticblocks."
         print(f"[Executando Bloco] Processando mensagem para {input.name}...")
         return HelloOutput(greeting=msg)
 

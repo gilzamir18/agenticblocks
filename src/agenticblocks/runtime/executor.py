@@ -5,9 +5,9 @@ import uuid
 from typing import Callable
 import networkx as nx
 
-from agentblocks.core.block import Block
-from agentblocks.core.graph import WorkflowGraph
-from agentblocks.runtime.state import ExecutionContext, NodeResult, NodeStatus, _current_ctx
+from agenticblocks.core.block import Block
+from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.runtime.state import ExecutionContext, NodeResult, NodeStatus, _current_ctx
 
 
 class WorkflowExecutor:

@@ -1,10 +1,10 @@
 
 
 import asyncio
-from agentblocks.core.graph import WorkflowGraph
-from agentblocks.runtime.executor import WorkflowExecutor
-from agentblocks.runtime.state import NodeResult, NodeStatus
-from agentblocks.blocks.llm.mock_llm import FetchDataBlock, ParseBlock, EnrichBlock, LLMCallBlock
+from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.runtime.executor import WorkflowExecutor
+from agenticblocks.runtime.state import NodeResult, NodeStatus
+from agenticblocks.blocks.llm.mock_llm import FetchDataBlock, ParseBlock, EnrichBlock, LLMCallBlock
 
 def on_start(node_id: str) -> None:
     print(f"  → iniciando: {node_id}")
