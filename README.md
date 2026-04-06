@@ -63,6 +63,11 @@ async def main():
 asyncio.run(main())
 ```
 
+### 4. LLM Agent Autonomy & A2A
+The library features `LLMAgentBlock`, a ready-to-use orchestrator that dynamically translates your other Blocks into Tools (Agent-to-Agent) smoothly.
+- **Unbounded Reasoning Loop:** Operates completely natively with `max_iterations=None` by default to avoid breaking long autonomous tasks abruptly. Limit it explicitly per agent if needed.
+- **Connection Pooling & Advanced API Parameters:** Pass HTTP client instances (e.g., `httpx.AsyncClient()`) or any specific API argument via `litellm_kwargs` to improve efficiency and skip initial TLS Handshake delays.
+
 Check the `examples/` directory for full demos.
 
 ---
@@ -83,6 +88,12 @@ Instale o módulo de forma local editável:
 pip install -e .
 ```
 
-A estrutura segue o modelo mostrado na sessão em inglês (Inglês: Input/Output Models, Logic Block, e Graph Execution). Consulte os scripts interativos e completos dentro da pasta `examples/`:
+### 4. Autonomia com Agentes LLM & A2A
+O módulo traz o `LLMAgentBlock`, um orquestrador pronto que abstrai e converte seus sub-blocos transparentemente em tools nativas.
+- **Raciocínio Ilimitado:** Sem amarras (`max_iterations=None` como padrão) para não abortar tarefas autônomas demoradas, permitindo definição exata pontualmente.
+- **Connection Pooling:** Aceita passagem de Sessões HTTP e dezenas de parâmetros estendidos via argumento `litellm_kwargs` para zerar o atraso inicial nas requisições do seu loop de execução.
+
+Explore os laboratórios interativos completos dentro da pasta `examples/`:
 - `01_hello_world.py`: Simulação básica e limpa do tutorial inicial.
-- `02_llm_pipeline.py`: Um pipeline completo demonstrando a paralelização de parsing de dados complexos com um mock de LLM Call.
+- `03_mcp_a2a_agent.py`: Exemplo do framework criando pontes Automáticas pra LLMs e lidando com delegação de chamadas entre dois agentes LLM em Loop (A2A).
+- `05_basic_blocks.py`: Teste rígido nativo para aferição de Overheads.

@@ -1,6 +1,6 @@
 import json
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
 import litellm
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.core.block import Block
@@ -18,6 +18,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     model: str = "gpt-4o-mini"
     system_prompt: str = "Você é um Agente Analista e Roteador prestativo. Use as ferramentas caso não possua contexto."
     tools: List[Block] = []
+    max_iterations: Optional[int] = None
+    litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    
+    model_config = {"arbitrary_types_allowed": True}
     
     async def run(self, input: AgentInput) -> AgentOutput:
         # Transparent A2A Bridging 
@@ -30,10 +34,19 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         ]
         
         tool_call_count = 0
+        iteration_count = 0
         
         while True:
-            # Argumentos opcionais caso ferramentas existam no escopo do Agente
-            kwargs = {}
+            if self.max_iterations is not None and iteration_count >= self.max_iterations:
+                return AgentOutput(
+                    response="Agent stopped: Max iterations reached.",
+                    tool_calls_made=tool_call_count
+                )
+                
+            iteration_count += 1
+            
+            # Argumentos opcionais caso ferramentas existam no escopo do Agente e os args persistentes base
+            kwargs = self.litellm_kwargs.copy()
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
             
