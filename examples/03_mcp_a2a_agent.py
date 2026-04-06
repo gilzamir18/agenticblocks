@@ -6,6 +6,8 @@ from agenticblocks.core.block import Block
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
+import sys
+import os
 
 # 1. Definindo o Agente Pesquisador (Sub-Agente a ser chamado por A2A)
 class ResearcherInput(BaseModel):
@@ -26,6 +28,11 @@ class ResearcherBlock(Block[ResearcherInput, ResearcherOutput]):
 
 # 2. Configurando o Grafo e o Diretor (Agent MCP)
 async def main():
+    # Detectamos o caminho absoluto correto para invocar o servidor Python como subprocesso
+    python_exe = sys.executable
+    server_path = os.path.join(os.path.dirname(__file__), "mcp_server_estoque.py")
+    llm_model = "ollama/gemmav3:b4" #if don't work change to "gemini/gemini-3-flash-preview"
+
     graph = WorkflowGraph()
     
     # Instanciamos nosso bloco A2A subordinado
@@ -34,17 +41,18 @@ async def main():
     # Instanciamos o Agente Principal (Delegador)
     director_agent = LLMAgentBlock(
         name="director_agent",
-        model="gpt-4o-mini",
+        model=llm_model,
         system_prompt="Você é o Diretor. Use a ferramenta researcher_agent para buscar dados exatos sempre antes de responder.",
-        tools=[researcher] # Aqui acontece a mágica (A2A Bridge e Pydantic Schema Automático)!
+        tools=[researcher], # Aqui acontece a mágica (A2A Bridge e Pydantic Schema Automático)!
+        max_iterations=5 # Evita loops com LLMs locais
     )
     
     graph.add_block(director_agent)
     executor = WorkflowExecutor(graph)
     
-    print("Iniciando Workflow de Agentes MCP/A2A...\n")
-    if not os.getenv("OPENAI_API_KEY"):
-        print("⚠️ OPENAI_API_KEY não encontrada. Exibiremos apenas a estrutura, mas o LiteLLM lançará exceção de key na chamada final.")
+    if llm_model.startswith("gemini"):
+        if not os.getenv("GEMINI_API_KEY"):
+            print("⚠️ Lembrete: Defina GEMINI_API_KEY para a resposta final fluir do LiteLLM.")
     
     try:
         ctx = await executor.run(initial_input={"prompt": "Por favor investigue a operação de hoje."})
