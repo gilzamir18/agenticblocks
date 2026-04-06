@@ -18,6 +18,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     model: str = "gpt-4o-mini"
     system_prompt: str = "Você é um Agente Analista e Roteador prestativo. Use as ferramentas caso não possua contexto."
     tools: List[Block] = []
+    max_iterations: int = 10
     
     async def run(self, input: AgentInput) -> AgentOutput:
         # Transparent A2A Bridging 
@@ -30,8 +31,17 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         ]
         
         tool_call_count = 0
+        iteration_count = 0
         
         while True:
+            if iteration_count >= self.max_iterations:
+                return AgentOutput(
+                    response="Agent stopped: Max iterations reached.",
+                    tool_calls_made=tool_call_count
+                )
+                
+            iteration_count += 1
+            
             # Argumentos opcionais caso ferramentas existam no escopo do Agente
             kwargs = {}
             if litellm_tools:
