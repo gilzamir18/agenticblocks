@@ -31,7 +31,7 @@ async def main():
     # Detectamos o caminho absoluto correto para invocar o servidor Python como subprocesso
     python_exe = sys.executable
     server_path = os.path.join(os.path.dirname(__file__), "mcp_server_estoque.py")
-    llm_model = "ollama/gemmav3:b4" #if don't work change to "gemini/gemini-3-flash-preview"
+    llm_model = "ollama/granite4:1b" #if don't work change to "gemini/gemini-3-flash-preview"
 
     graph = WorkflowGraph()
     
@@ -49,7 +49,8 @@ async def main():
     
     graph.add_block(director_agent)
     executor = WorkflowExecutor(graph)
-    
+    llm_model = "ollama/granite4:1b"
+
     if llm_model.startswith("gemini"):
         if not os.getenv("GEMINI_API_KEY"):
             print("⚠️ Lembrete: Defina GEMINI_API_KEY para a resposta final fluir do LiteLLM.")

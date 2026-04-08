@@ -31,7 +31,7 @@ async def main():
     # 2. Injetamos isso de forma transparente no nosso LLM!
     agente_comprador = LLMAgentBlock(
         name="agente_comprador",
-        model="gemini/gemini-1.5-flash",
+        model="ollama/granite4:1b",
         system_prompt="Você é o assistente de compras da nossa matriz. Use a ferramenta do servidor para verificar O PREÇO e a DISPONIBILIDADE exata do que o usuário pediru.",
         tools=mcp_tools 
     )
@@ -39,9 +39,9 @@ async def main():
     graph = WorkflowGraph()
     graph.add_block(agente_comprador)
     executor = WorkflowExecutor(graph)
-    
-    if not os.getenv("OPENAI_API_KEY"):
-         print("⚠️ Lembrete: Defina OPENAI_API_KEY para a resposta final fluir do LiteLLM.")
+    if agente_comprador.model.startswith("openai"):
+        if not os.getenv("OPENAI_API_KEY"):
+            print("⚠️ Lembrete: Defina OPENAI_API_KEY para a resposta final fluir do LiteLLM.")
          
     try:
         # 3. Disparamos o Loop de Raciocínio

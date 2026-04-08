@@ -19,6 +19,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     system_prompt: str = "Você é um Agente Analista e Roteador prestativo. Use as ferramentas caso não possua contexto."
     tools: List[Block] = []
     max_iterations: Optional[int] = None
+    max_tool_calls: int = 2
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
     
     model_config = {"arbitrary_types_allowed": True}
@@ -49,6 +50,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             kwargs = self.litellm_kwargs.copy()
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
+                # Após atingir o limite de chamadas, proíbe novas ferramentas
+                kwargs["tool_choice"] = "none" if tool_call_count >= self.max_tool_calls else "auto"
             
             # Chamada principal com LiteLLM
             response = await litellm.acompletion(

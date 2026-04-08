@@ -70,6 +70,11 @@ The library features `LLMAgentBlock`, a ready-to-use orchestrator that dynamical
 
 Check the `examples/` directory for full demos.
 
+### Examples & Model Recommendations
+It is recommended to install [Ollama](https://ollama.com/) with the model `granite4:1b` (`ollama run granite4:1b`) to test the examples locally. Alternatively, you can modify the examples to use a commercial API, such as Gemini (`gemini/gemini-3.1-flash-lite-preview`) or OpenAI.
+
+> **Note:** The use of quantized or smaller models like `granite` may result in failures or lower-than-expected reasoning results. Using large commercial models almost always yields excellent results, but requires extra configuration (setting the API KEY environment variable). Be aware that they may fail due to free-tier restrictions and rate limits. Using paid versions is an excellent option for stable operations.
+
 ---
 
 ## <a name="português"></a>🇧🇷 Português
@@ -97,3 +102,8 @@ Explore os laboratórios interativos completos dentro da pasta `examples/`:
 - `01_hello_world.py`: Simulação básica e limpa do tutorial inicial.
 - `03_mcp_a2a_agent.py`: Exemplo do framework criando pontes Automáticas pra LLMs e lidando com delegação de chamadas entre dois agentes LLM em Loop (A2A).
 - `05_basic_blocks.py`: Teste rígido nativo para aferição de Overheads.
+
+### Recomendações de Modelos e Exemplos
+Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b` (`ollama run granite4:1b`) para testar os exemplos localmente. Alternativamente, você pode modificar os exemplos para utilizar uma API comercial, como Gemini (`gemini/gemini-1.5-flash`) ou OpenAI.
+
+> **Atenção:** O uso de modelos quantizados ou menores como o `granite` pode resultar em falhas ou resultados de raciocínio abaixo do esperado. O uso de grandes modelos comerciais quase sempre gera excelentes resultados, mas exige configuração extra (definição de variável de ambiente com a API KEY). Vale ressaltar que eles sofrem com restrições e limites de uso da camada gratuita, o que pode resultar em erros de execução. O uso de versões pagas é uma das melhores opções.
