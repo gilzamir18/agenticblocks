@@ -46,11 +46,21 @@ class EmailCheckerAgenticBlock(Block[EmailCheckerInput, EmailCheckerOutput]):
 
         agent_output = await self.llmagent.run(input=AgentInput(prompt=prompt))
 
-        parsed_result = json.loads(agent_output.response.strip("```json\n").strip("```"))
+        try:
+            parsed_result = json.loads(agent_output.response.strip("```json\n").strip("```"))
+        except json.JSONDecodeError:
+            parsed_result = {"content_type": "desconhecido", "actions": agent_output.response}
+            
+        # Modelos menores (como Granite) podem retornar listas de ações de forma inesperada.
+        actions_raw = parsed_result.get("actions", "")
+        if isinstance(actions_raw, list):
+            actions_str = " | ".join(str(x) for x in actions_raw)
+        else:
+            actions_str = str(actions_raw)
 
         return EmailCheckerOutput(
-            content_type = parsed_result["content_type"],
-            actions = parsed_result["actions"]
+            content_type = str(parsed_result.get("content_type", "desconhecido")),
+            actions = actions_str
         )
     
 
@@ -60,7 +70,7 @@ async def main():
 
     llmmodelagent = LLMAgentBlock(
         name="LLM Model Agent",
-        model="gemini/gemini-3-flash-preview",
+        model="ollama/granite4:1b",
         system_prompt="Você é um assistente de email, classifique o tipo de conteúdo e as ações necessárias."
     )
 
@@ -71,8 +81,10 @@ async def main():
 
     print("Iniciando Workflow...\n")
     
-    if not os.getenv("GEMINI_API_KEY"):
+    if llmmodelagent.model.startswith("gemini") and not os.getenv("GEMINI_API_KEY"):
          print("⚠️ Lembrete: Defina GEMINI_API_KEY para a resposta final fluir do LiteLLM.")
+    elif llmmodelagent.model.startswith("openai") and not os.getenv("OPENAI_API_KEY"):
+         print("⚠️ Lembrete: Defina OPENAI_API_KEY para a resposta final fluir do LiteLLM.")
     try:
         # 3. Disparamos o Loop de Raciocínio
         print("👤 Simulando o recebimento de um email...")
