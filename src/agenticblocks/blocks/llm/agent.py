@@ -61,28 +61,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
             
             message = response.choices[0].message
-
-            # Constrói o dict da mensagem do assistente manualmente para garantir que
-            # tool_calls[].function.arguments permaneça como string JSON (e não vire dict).
-            # model_dump() desserializa arguments para dict, corrompendo o histórico.
-            assistant_message: Dict[str, Any] = {
-                "role": "assistant",
-                "content": message.content,
-            }
-            if message.tool_calls:
-                assistant_message["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,  # mantém como string!
-                        },
-                    }
-                    for tc in message.tool_calls
-                ]
-            messages.append(assistant_message)
-
+            # Append dict format rather than object back to history
+            messages.append(message.model_dump(exclude_none=True))
+            
             # Se não tomou decisão de chamar ferramentas, finalizamos iterando o raciocinio e extraindo a reposta.
             if not message.tool_calls:
                 return AgentOutput(
@@ -102,7 +83,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": f"Tool {function_name} not found."}, ensure_ascii=False)
+                        "content": json.dumps({"error": f"Tool {function_name} not found."})
                     })
                     continue
                     
@@ -114,22 +95,17 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     # RUN: O Agente principal engatilha um Agente Subordinado de forma transparente (A2A)!
                     result = await matched_block.run(input=input_model)
                     
-                    # O output tipado retorna ao escopo original do LiteLLM como JSON ou String (Caso seja A2A)
-                    if isinstance(result, AgentOutput):
-                        content = result.response
-                    else:
-                        content = json.dumps(result.model_dump(), ensure_ascii=False)
-
+                    # O output tipado retorna ao escopo original do LiteLLM como JSON
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": content
+                        "content": json.dumps(result.model_dump())
                     })
                 except Exception as e:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": str(e)}, ensure_ascii=False)
+                        "content": json.dumps({"error": str(e)})
                     })
