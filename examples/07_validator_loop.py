@@ -1,12 +1,12 @@
 """
-07_validator_loop.py — Ciclo produtor→validador expresso nativamente no grafo.
+07_validator_loop.py — Ciclo produtor->validador expresso nativamente no grafo.
 
 O WorkflowExecutor detecta o CycleGroup e executa o loop com feedback
-automático — sem nenhum bloco orquestrador especial.
+automatico -- sem nenhum bloco orquestrador especial.
 
-Produtor  : LLMAgentBlock  →  gera um email formal
-Validador : @as_tool        →  função Python que verifica estrutura e formalidade
-Downstream: bloco de impressão conectado à saída do ciclo
+Produtor  : LLMAgentBlock  ->  gera um email formal
+Validador : @as_tool        ->  funcao Python que verifica estrutura e formalidade
+Resultado : lido diretamente do ExecutionContext apos execucao
 """
 
 import asyncio
@@ -14,16 +14,13 @@ import os
 
 from agenticblocks import as_tool
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
-from agenticblocks.core.block import Block
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
-from agenticblocks.runtime.state import NodeResult, NodeStatus
-from pydantic import BaseModel
 
-MODEL = os.getenv("AGENTICBLOCKS_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("AGENTICBLOCKS_MODEL", "ollama/granite4:1b")
 
 
-# ── Validador: função pura, reutilizável em qualquer grafo ───────────────────
+# -- Validador: funcao pura, reutilizavel em qualquer grafo ------------------
 
 @as_tool
 def validate_email(content: str) -> dict:
@@ -34,8 +31,8 @@ def validate_email(content: str) -> dict:
     Returns: {"is_valid": bool, "feedback": str}
     """
     informal_markers = [
-        "oi ", "olá,", "olá!", "valeu", "vlw", "blz", "beleza",
-        "galera", "pessoal", "😊", "👍",
+        "oi ", "ola,", "ola!", "valeu", "vlw", "blz", "beleza",
+        "galera", "pessoal",
     ]
     paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
 
@@ -61,35 +58,10 @@ def validate_email(content: str) -> dict:
     return {"is_valid": True, "feedback": ""}
 
 
-# ── Downstream bloco de saída ─────────────────────────────────────────────────
-
-class PrintInput(BaseModel):
-    # Matches AgentOutput from LLMAgentBlock
-    response: str = ""
-    tool_calls_made: int = 0
-
-
-class PrintOutput(BaseModel):
-    done: bool = True
-
-
-class PrintBlock(Block[PrintInput, PrintOutput]):
-    """Simply prints the final validated email."""
-    name: str = "print_result"
-    description: str = "Prints the final result."
-
-    async def run(self, input: PrintInput) -> PrintOutput:
-        print("\n" + "=" * 60)
-        print("Final validated email:\n")
-        print(input.response)
-        print("=" * 60)
-        return PrintOutput(done=True)
-
-
-# ── Construção do grafo ───────────────────────────────────────────────────────
+# -- Construcao do grafo ------------------------------------------------------
 
 async def main():
-    writer    = LLMAgentBlock(
+    writer = LLMAgentBlock(
         name="writer",
         model=MODEL,
         system_prompt=(
@@ -98,15 +70,13 @@ async def main():
         ),
         max_tool_calls=0,
     )
-    printer   = PrintBlock(name="print_result")
 
     graph = WorkflowGraph()
     graph.add_block(writer)
     graph.add_block(validate_email)  # FunctionBlock from @as_tool
-    graph.add_block(printer)
 
-    # Declare the cycle: writer → validate_email
-    # The executor will loop with feedback until validate_email returns is_valid=True
+    # Declara o ciclo: writer -> validate_email
+    # O executor itera com feedback ate validate_email retornar is_valid=True
     graph.add_cycle(
         name="refine_email",
         edges=[("writer", "validate_email")],
@@ -114,16 +84,7 @@ async def main():
         max_iterations=3,
     )
 
-    # Connect the cycle output to a downstream node (fully homogeneous!)
-    graph.connect("refine_email", "print_result")
-
-    executor = WorkflowExecutor(
-        graph,
-        on_node_start=lambda nid: print(f"\n>> Starting node: {nid}"),
-        on_node_end=lambda r: print(
-            f"  OK {r.node_id} ({r.duration_ms:.0f}ms)"
-        ) if r.status == NodeStatus.DONE else None,
-    )
+    executor = WorkflowExecutor(graph)
 
     print("=" * 60)
     print("Starting workflow with cycle...")
@@ -136,12 +97,13 @@ async def main():
         )
     })
 
-    cycle_result = ctx.cycle_results.get("refine_email")
-    if cycle_result:
-        print(
-            f"\n[Done] Cycles: {cycle_result.iterations} | "
-            f"Validated: {cycle_result.validated}"
-        )
+    # O resultado do ciclo esta disponivel diretamente no contexto --
+    # nenhum bloco extra necessario.
+    cr = ctx.cycle_results.get("refine_email")
+    if cr:
+        print(f"\n[Done] Iterations: {cr.iterations} | Validated: {cr.validated}")
+        print("\n--- Final email ---\n")
+        print(cr.output.response)
 
 
 if __name__ == "__main__":
