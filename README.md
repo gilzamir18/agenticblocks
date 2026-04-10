@@ -14,6 +14,8 @@ A library to build agent workflows like **Lego blocks**. Each step in your agent
 - **Strong typing**: Pydantic validates connections and prevents unmatched dependencies between LLM tool calls.
 - **Standardized connections**: Blocks only know their own inputs and outputs. Thus, entire workflows can act as single blocks later.
 - **Smart Parallelism (Waves)**: The asyncio engine fires simultaneous tasks (waves) whenever dependencies are resolved, maximizing API speed.
+- **Native Cycles**: Declare bounded feedback loops directly in the graph (`add_cycle()`). The executor handles iteration, feedback propagation, and exit conditions automatically.
+- **Functions as Tools**: Any plain Python function (sync or async) becomes a block with `@as_tool` — no class boilerplate required.
 
 ### Getting Started
 
@@ -63,17 +65,78 @@ async def main():
 asyncio.run(main())
 ```
 
-### 4. LLM Agent Autonomy & A2A
-The library features `LLMAgentBlock`, a ready-to-use orchestrator that dynamically translates your other Blocks into Tools (Agent-to-Agent) smoothly.
-- **Unbounded Reasoning Loop:** Operates completely natively with `max_iterations=None` by default to avoid breaking long autonomous tasks abruptly. Limit it explicitly per agent if needed.
-- **Connection Pooling & Advanced API Parameters:** Pass HTTP client instances (e.g., `httpx.AsyncClient()`) or any specific API argument via `litellm_kwargs` to improve efficiency and skip initial TLS Handshake delays.
+#### 4. Functions as Tools
 
-Check the `examples/` directory for full demos.
+Any Python function can be registered as a block with `@as_tool`. Both sync and async functions are supported — sync functions run in a thread pool automatically.
+
+```python
+from agenticblocks import as_tool
+from agenticblocks.blocks.llm.agent import LLMAgentBlock
+
+@as_tool
+async def fetch_weather(city: str) -> str:
+    """Returns the current weather for a city."""
+    return f"Sunny in {city}."
+
+agent = LLMAgentBlock(
+    name="assistant",
+    model="gpt-4o-mini",
+    tools=[fetch_weather],   # same interface as any Block
+)
+```
+
+#### 5. LLM Agent Autonomy & A2A
+
+`LLMAgentBlock` is a ready-to-use orchestrator that dynamically translates your other Blocks into Tools (Agent-to-Agent) seamlessly.
+
+- **Bounded tool loop**: `max_tool_calls` prevents runaway loops.
+- **A2A bridging**: sub-agents are called as tools transparently — the parent LLM receives only the text response, not raw JSON metadata.
+- **Connection Pooling**: Pass any `litellm_kwargs` (HTTP clients, timeouts, etc.) to optimize API performance.
+
+#### 6. Native Feedback Cycles
+
+Declare validator loops directly in the graph without any wrapper block:
+
+```python
+from agenticblocks import as_tool
+from agenticblocks.core.graph import WorkflowGraph
+
+@as_tool
+def validate_output(content: str) -> dict:
+    ok = len(content.split()) >= 100
+    return {"is_valid": ok, "feedback": "Too short." if not ok else ""}
+
+graph = WorkflowGraph()
+graph.add_block(writer)
+graph.add_block(validate_output)
+
+graph.add_cycle(
+    name="refine",
+    edges=[("writer", "validate_output")],
+    condition_block="validate_output",
+    max_iterations=3,
+)
+# Downstream nodes connect to the cycle output as a normal node
+graph.connect("refine", "publisher")
+```
+
+The executor runs the cycle, propagates feedback to the producer on each rejection, and stores the result in `ctx` under the cycle name.
 
 ### Examples & Model Recommendations
-It is recommended to install [Ollama](https://ollama.com/) with the model `granite4:1b` (`ollama run granite4:1b`) to test the examples locally. Alternatively, you can modify the examples to use a commercial API, such as Gemini (`gemini/gemini-3.1-flash-lite-preview`) or OpenAI.
 
-> **Note:** The use of quantized or smaller models like `granite` may result in failures or lower-than-expected reasoning results. Using large commercial models almost always yields excellent results, but requires extra configuration (setting the API KEY environment variable). Be aware that they may fail due to free-tier restrictions and rate limits. Using paid versions is an excellent option for stable operations.
+It is recommended to install [Ollama](https://ollama.com/) with the model `granite4:1b` (`ollama run granite4:1b`) to test the examples locally. Alternatively, you can modify the examples to use a commercial API, such as Gemini (`gemini/gemini-2.0-flash`) or OpenAI.
+
+| Example | Description |
+|---|---|
+| `01_hello_world.py` | Minimal block + graph + executor setup |
+| `02_llm_pipeline.py` | Parallel wave execution with multiple blocks |
+| `03_mcp_a2a_agent.py` | MCP bridge + Agent-to-Agent (A2A) tool delegation |
+| `04_mcp_python_native.py` | Native Python MCP server |
+| `05_basic_blocks.py` | Overhead benchmarking |
+| `06_functionastool.py` | `@as_tool` decorator for plain functions |
+| `07_validator_loop.py` | Native graph cycle with producer + validator feedback loop |
+
+> **Note:** Quantized or small models like `granite` may produce lower-quality reasoning. Large commercial models yield excellent results but require an API key environment variable. Free-tier rate limits may cause occasional errors; paid tiers offer stable operation.
 
 ---
 
@@ -84,7 +147,9 @@ Uma biblioteca para construir fluxos de agentes no estilo **Lego**. Cada passo d
 
 - **Forte tipagem**: Pydantic valida os encaixes e previne dependências não satisfeitas.
 - **Encaixes padronizados**: Blocos só conhecem as próprias entradas e saídas. Workflows inteiros funcionam como blocos únicos.
-- **Paralelismo Inteligente (Ondas)**: O motor dispara tarefas simultâneas (waves) sempre que as dependências de um bloco são resolvidas, otimizando a velocidade de conexões a APIs.
+- **Paralelismo Inteligente (Ondas)**: O motor dispara tarefas simultâneas sempre que as dependências de um bloco são resolvidas.
+- **Ciclos Nativos**: Declare loops de feedback diretamente no grafo com `add_cycle()`. O executor gerencia iteração, propagação de feedback e condição de saída automaticamente.
+- **Funções como Ferramentas**: Qualquer função Python (síncrona ou async) vira um bloco com `@as_tool` — sem boilerplate de classe.
 
 ### Primeiros Passos
 
@@ -93,17 +158,71 @@ Instale o módulo de forma local editável:
 pip install -e .
 ```
 
-### 4. Autonomia com Agentes LLM & A2A
-O módulo traz o `LLMAgentBlock`, um orquestrador pronto que abstrai e converte seus sub-blocos transparentemente em tools nativas.
-- **Raciocínio Ilimitado:** Sem amarras (`max_iterations=None` como padrão) para não abortar tarefas autônomas demoradas, permitindo definição exata pontualmente.
-- **Connection Pooling:** Aceita passagem de Sessões HTTP e dezenas de parâmetros estendidos via argumento `litellm_kwargs` para zerar o atraso inicial nas requisições do seu loop de execução.
+#### 1–3. Blocos, Grafo e Execução
 
-Explore os laboratórios interativos completos dentro da pasta `examples/`:
-- `01_hello_world.py`: Simulação básica e limpa do tutorial inicial.
-- `03_mcp_a2a_agent.py`: Exemplo do framework criando pontes Automáticas pra LLMs e lidando com delegação de chamadas entre dois agentes LLM em Loop (A2A).
-- `05_basic_blocks.py`: Teste rígido nativo para aferição de Overheads.
+A estrutura básica é idêntica ao tutorial acima (seção em inglês): defina modelos Pydantic, crie um `Block`, adicione ao `WorkflowGraph` e execute com `WorkflowExecutor`.
 
-### Recomendações de Modelos e Exemplos
-Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b` (`ollama run granite4:1b`) para testar os exemplos localmente. Alternativamente, você pode modificar os exemplos para utilizar uma API comercial, como Gemini (`gemini/gemini-1.5-flash`) ou OpenAI.
+#### 4. Funções como Ferramentas
 
-> **Atenção:** O uso de modelos quantizados ou menores como o `granite` pode resultar em falhas ou resultados de raciocínio abaixo do esperado. O uso de grandes modelos comerciais quase sempre gera excelentes resultados, mas exige configuração extra (definição de variável de ambiente com a API KEY). Vale ressaltar que eles sofrem com restrições e limites de uso da camada gratuita, o que pode resultar em erros de execução. O uso de versões pagas é uma das melhores opções.
+Qualquer função pode ser registrada como bloco com `@as_tool`. Funções síncronas rodam em thread pool automaticamente.
+
+```python
+from agenticblocks import as_tool
+
+@as_tool
+def buscar_clima(cidade: str) -> str:
+    """Retorna o clima atual de uma cidade."""
+    return f"Ensolarado em {cidade}."
+```
+
+#### 5. Autonomia com Agentes LLM & A2A
+
+O `LLMAgentBlock` abstrai e converte sub-blocos em ferramentas nativas (A2A). Destaques:
+
+- **`max_tool_calls`**: Limita o loop de ferramentas para evitar execuções infinitas.
+- **A2A transparente**: Agentes subordinados são chamados como ferramentas; o agente pai recebe apenas o texto da resposta, sem metadados JSON brutos.
+- **Connection Pooling**: Aceite sessões HTTP e parâmetros estendidos via `litellm_kwargs`.
+
+#### 6. Ciclos de Feedback Nativos
+
+Declare um loop validador diretamente no grafo — sem bloco orquestrador especial:
+
+```python
+from agenticblocks import as_tool
+from agenticblocks.core.graph import WorkflowGraph
+
+@as_tool
+def validar(content: str) -> dict:
+    ok = len(content.split()) >= 100
+    return {"is_valid": ok, "feedback": "Muito curto." if not ok else ""}
+
+graph = WorkflowGraph()
+graph.add_block(escritor)
+graph.add_block(validar)
+
+graph.add_cycle(
+    name="refinar",
+    edges=[("escritor", "validar")],
+    condition_block="validar",
+    max_iterations=3,
+)
+graph.connect("refinar", "publicador")
+```
+
+O executor itera automaticamente, injeta o feedback no prompt do produtor a cada rejeição e disponibiliza o resultado final em `ctx.get_output("refinar")`.
+
+### Exemplos & Modelos
+
+Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b` para testar localmente. Alternativamente, use uma API comercial como Gemini ou OpenAI.
+
+| Exemplo | Descrição |
+|---|---|
+| `01_hello_world.py` | Setup mínimo: bloco + grafo + executor |
+| `02_llm_pipeline.py` | Execução paralela em waves |
+| `03_mcp_a2a_agent.py` | Bridge MCP + delegação A2A entre agentes |
+| `04_mcp_python_native.py` | Servidor MCP nativo em Python |
+| `05_basic_blocks.py` | Benchmark de overhead |
+| `06_functionastool.py` | Decorator `@as_tool` para funções simples |
+| `07_validator_loop.py` | Ciclo nativo no grafo: produtor + validador com feedback |
+
+> **Atenção:** Modelos quantizados ou menores podem produzir resultados abaixo do esperado. Modelos comerciais grandes geram excelentes resultados, mas exigem configuração de API KEY e podem sofrer com limites da camada gratuita.
