@@ -83,7 +83,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": f"Tool {function_name} not found."})
+                        "content": json.dumps({"error": f"Tool {function_name} not found."}, ensure_ascii=False)
                     })
                     continue
                     
@@ -95,17 +95,22 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     # RUN: O Agente principal engatilha um Agente Subordinado de forma transparente (A2A)!
                     result = await matched_block.run(input=input_model)
                     
-                    # O output tipado retorna ao escopo original do LiteLLM como JSON
+                    # O output tipado retorna ao escopo original do LiteLLM como JSON ou String (Caso seja A2A)
+                    if isinstance(result, AgentOutput):
+                        content = result.response
+                    else:
+                        content = json.dumps(result.model_dump(), ensure_ascii=False)
+
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps(result.model_dump())
+                        "content": content
                     })
                 except Exception as e:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": str(e)})
+                        "content": json.dumps({"error": str(e)}, ensure_ascii=False)
                     })
