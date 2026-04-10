@@ -1,75 +1,149 @@
 # Validator Loop
 
-The **ValidatorLoopBlock** implements a self-correcting production cycle that pairs any generator block (the *producer*) with any validation function (the *validator*). It repeatedly refines the output until it passes validation or a maximum number of attempts is reached.
-
-## How it works
+The validator loop is a self-correcting execution cycle that pairs a **producer** block with a **validator** block. The producer generates output; the validator checks it. If validation fails, the validator's feedback is automatically appended to the next prompt so the producer can correct itself. The cycle repeats until the output passes or `max_iterations` is reached.
 
 ```
 Input (y)
    │
-   ▼
-Producer(y) ──► Output (x)
+   v
+Producer(y) --> Output (x)
                    │
-                   ▼
-             Validator(x) ──► is_valid=True  ──► return x ✅
+                   v
+             Validator(x) --> is_valid=True  --> exit cycle, return x
                    │
                    └── is_valid=False
                              │
-                             ▼
+                             v
                         y = y + x + feedback
                              │
-                             └──► Producer(y) [next iteration]
+                             └--> Producer(y) [next iteration]
 ```
 
-1. The **producer** receives the current prompt `y` and generates output `x`.
-2. The **validator** receives `x` and returns `{"is_valid": bool, "feedback": str}`.
-3. If valid → the loop ends and returns `x`.
-4. If not valid → the feedback is appended to the prompt so the producer knows what went wrong.
-5. The cycle repeats until validation passes or `max_iterations` is reached.
+---
 
-## Installation
+## Approach 1 — Native graph cycle *(recommended)*
 
-`ValidatorLoopBlock` lives in the `agenticblocks.blocks.flow` module:
+Cycles are first-class citizens in `WorkflowGraph`. Declare the cycle with `add_cycle()` and the executor handles the loop transparently, including:
 
-```python
-from agenticblocks.blocks.flow.validator_loop import ValidatorLoopBlock, ValidatorLoopInput
-```
+- Collecting initial inputs from upstream nodes
+- Building the augmented prompt on each rejected iteration
+- Storing the cycle output in `ExecutionContext` so downstream blocks can consume it normally
 
-## Quickstart
-
-The minimal setup requires only two things: an existing `LLMAgentBlock` as the producer and an `@as_tool` decorated function as the validator.
+### Quickstart
 
 ```python
-import asyncio
-import os
-
+import asyncio, os
 from agenticblocks import as_tool
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
-from agenticblocks.blocks.flow.validator_loop import ValidatorLoopBlock, ValidatorLoopInput
+from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.runtime.executor import WorkflowExecutor
 
 MODEL = os.getenv("AGENTICBLOCKS_MODEL", "gpt-4o-mini")
 
-# 1. Validator — plain Python function, no extra class needed
+# 1. Validator — plain function, reusable in any graph
 @as_tool
 def validate_email(content: str) -> dict:
-    """Check that the email has at least 3 paragraphs and no informal language."""
+    """Checks for at least 3 paragraphs and no informal language."""
     paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
     if len(paragraphs) < 3:
         return {
             "is_valid": False,
-            "feedback": f"Only {len(paragraphs)} paragraph(s). Write at least 3: introduction, body, and closing.",
+            "feedback": f"Only {len(paragraphs)} paragraph(s). Write at least 3.",
         }
     return {"is_valid": True, "feedback": ""}
 
 # 2. Producer — standard LLMAgentBlock
 writer = LLMAgentBlock(
-    name="EmailWriter",
+    name="writer",
     model=MODEL,
-    system_prompt="You are a professional corporate writer. Write formal, well-structured emails.",
+    system_prompt="You are a professional corporate writer.",
     max_tool_calls=0,
 )
 
-# 3. Orchestrate the loop
+# 3. Build the graph with a declared cycle
+graph = WorkflowGraph()
+graph.add_block(writer)
+graph.add_block(validate_email)
+
+graph.add_cycle(
+    name="refine_email",
+    edges=[("writer", "validate_email")],  # data flow inside the cycle
+    condition_block="validate_email",       # controls is_valid / feedback
+    max_iterations=3,
+)
+
+# 4. Connect the cycle to downstream nodes as usual
+graph.add_block(my_publisher)
+graph.connect("refine_email", "my_publisher")
+
+async def main():
+    executor = WorkflowExecutor(graph)
+    ctx = await executor.run(initial_input={
+        "prompt": "Write a formal email postponing Friday's meeting to Monday at 10 AM."
+    })
+
+    cycle_result = ctx.cycle_results["refine_email"]
+    print(f"Validated: {cycle_result.validated} | Iterations: {cycle_result.iterations}")
+    print(ctx.get_output("refine_email"))  # the producer's last (validated) output
+
+asyncio.run(main())
+```
+
+### `graph.add_cycle()` reference
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | required | Unique cycle identifier; acts as a virtual node in the graph. |
+| `edges` | `list[tuple[str, str]]` | required | Directed edges `(from, to)` between blocks **inside** the cycle. |
+| `condition_block` | `str` | required | Name of the block whose output controls continuation. Must return `is_valid` and optionally `feedback`. |
+| `max_iterations` | `int` | `5` | Maximum iterations before giving up. Result is returned with `validated=False`. |
+| `prompt_field` | `str` | `"prompt"` | Field on the entry block's input schema that receives the augmented feedback prompt. |
+
+The **entry block** (first to receive input) is auto-detected as the cycle member with no incoming internal edges.
+
+### Reading the cycle result
+
+```python
+ctx = await executor.run(...)
+
+# Option A — via ExecutionContext helper (same API as any node)
+output = ctx.get_output("refine_email")   # returns the producer's last output
+
+# Option B — full cycle metadata
+cr = ctx.cycle_results["refine_email"]
+print(cr.validated)    # bool
+print(cr.iterations)   # int
+print(cr.output)       # BaseModel — producer's last output
+```
+
+### Multi-block cycles
+
+Cycles are not limited to a producer + validator pair. Any linear chain works:
+
+```python
+graph.add_block(writer)
+graph.add_block(formatter)
+graph.add_block(validator)
+
+graph.add_cycle(
+    name="full_pipeline",
+    edges=[("writer", "formatter"), ("formatter", "validator")],
+    condition_block="validator",
+    max_iterations=4,
+)
+```
+
+The executor runs `writer → formatter → validator` on each iteration. The cycle output is `formatter`'s last output (the last non-condition block).
+
+---
+
+## Approach 2 — `ValidatorLoopBlock` *(standalone convenience)*
+
+If you do not need a full `WorkflowGraph` — for example in a simple script or when composing cycles within a custom block — `ValidatorLoopBlock` provides the same pattern as a self-contained block:
+
+```python
+from agenticblocks.blocks.flow.validator_loop import ValidatorLoopBlock, ValidatorLoopInput
+
 loop = ValidatorLoopBlock(
     name="email_loop",
     producer=writer,
@@ -77,50 +151,21 @@ loop = ValidatorLoopBlock(
     max_iterations=3,
 )
 
-async def main():
-    result = await loop.run(input=ValidatorLoopInput(
-        prompt="Write an email to the team informing that Friday's meeting has been postponed to Monday at 10 AM, room 204."
-    ))
-    print(f"Validated: {result.validated} | Iterations: {result.iterations}")
-    print(result.result)
-
-asyncio.run(main())
+result = await loop.run(input=ValidatorLoopInput(
+    prompt="Write a formal email..."
+))
+print(result.validated, result.iterations, result.result)
 ```
 
-## API Reference
+`ValidatorLoopBlock` is itself a `Block` and can be added to a `WorkflowGraph` as a single node, but its internal blocks (`producer`, `validator`) will not be individually visible or addressable in the graph. Use Approach 1 when that matters.
 
-### `ValidatorLoopBlock`
+---
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `name` | `str` | required | Unique block identifier. |
-| `producer` | `Block` | required | Any block whose `input_schema` exposes a `prompt: str` field. |
-| `validator` | `Block` | required | Block (or `@as_tool` function) whose `input_schema` exposes a `content: str` field. |
-| `max_iterations` | `int` | `5` | Maximum number of produce→validate cycles before giving up. |
+## Validator return formats
 
-### `ValidatorLoopInput`
+Both approaches accept the same three validator output formats:
 
-```python
-class ValidatorLoopInput(BaseModel):
-    prompt: str
-```
-
-### `ValidatorLoopOutput`
-
-```python
-class ValidatorLoopOutput(BaseModel):
-    result: str       # final text output from the producer
-    iterations: int   # how many cycles ran
-    validated: bool   # True if the validator accepted the result
-```
-
-## Validator Return Formats
-
-The `ValidatorLoopBlock` is flexible about what the validator returns. All three formats are supported:
-
-### Option A — `@as_tool` returning a `dict` *(recommended)*
-
-The simplest approach. Return a plain dictionary with `is_valid` and `feedback` keys:
+### A — `@as_tool` returning `dict` *(recommended)*
 
 ```python
 @as_tool
@@ -128,13 +173,11 @@ def my_validator(content: str) -> dict:
     ok = len(content) > 100
     return {
         "is_valid": ok,
-        "feedback": "" if ok else "Response is too short, elaborate more.",
+        "feedback": "" if ok else "Too short — elaborate more.",
     }
 ```
 
-### Option B — `@as_tool` returning a `ValidationResult` model
-
-If you prefer typed outputs, import and return `ValidationResult` directly:
+### B — `@as_tool` returning a typed model
 
 ```python
 from agenticblocks.blocks.flow.validator_loop import ValidationResult
@@ -144,91 +187,82 @@ def my_validator(content: str) -> ValidationResult:
     return ValidationResult(is_valid=True, feedback="")
 ```
 
-### Option C — `LLMAgentBlock` returning JSON
+### C — `LLMAgentBlock` returning JSON
 
-You can use another LLM as the validator. The loop will extract the JSON from the model's text response automatically:
+The executor parses the JSON out of the model's text response automatically:
 
 ```python
-llm_validator = LLMAgentBlock(
-    name="validator_llm",
-    model=MODEL,
+judge = LLMAgentBlock(
+    name="judge",
+    model="gpt-4o",
     system_prompt=(
-        'You are a strict code reviewer. '
-        'Respond ONLY with valid JSON: {"is_valid": true/false, "feedback": "reason if rejected"}'
+        "You are a strict code reviewer. "
+        'Respond ONLY with JSON: {"is_valid": true/false, "feedback": "reason"}'
     ),
     max_tool_calls=0,
 )
-
-loop = ValidatorLoopBlock(
-    name="code_loop",
-    producer=code_writer,
-    validator=llm_validator,
-    max_iterations=4,
-)
 ```
 
-## Practical Examples
+> **Tip:** For the native graph approach, the executor uses `_get_text_field()` to automatically detect whether the condition block's input schema expects `content`, `prompt`, `text`, or another string field — no manual mapping needed.
 
-### Example 1: Enforcing output length
+---
+
+## Practical examples
+
+### Enforce output length
 
 ```python
 @as_tool
 def length_validator(content: str) -> dict:
-    """Ensure the response is at least 200 words."""
     word_count = len(content.split())
     if word_count < 200:
-        return {
-            "is_valid": False,
-            "feedback": f"Response has {word_count} words. It must be at least 200 words long.",
-        }
+        return {"is_valid": False, "feedback": f"Only {word_count} words. Need at least 200."}
     return {"is_valid": True, "feedback": ""}
 ```
 
-### Example 2: JSON schema validation
+### JSON schema validation
 
 ```python
 import json
 
 @as_tool
 def json_validator(content: str) -> dict:
-    """Ensure the producer returns parseable JSON with required keys."""
     try:
         data = json.loads(content)
-        required = {"title", "summary", "tags"}
-        missing = required - data.keys()
+        missing = {"title", "summary", "tags"} - data.keys()
         if missing:
-            return {"is_valid": False, "feedback": f"Missing required keys: {missing}"}
+            return {"is_valid": False, "feedback": f"Missing keys: {missing}"}
         return {"is_valid": True, "feedback": ""}
     except json.JSONDecodeError as e:
         return {"is_valid": False, "feedback": f"Invalid JSON: {e}"}
 ```
 
-### Example 3: LLM-as-Judge pipeline
-
-Use a stronger model to evaluate the output of a smaller, faster one:
+### LLM-as-Judge pipeline
 
 ```python
 judge = LLMAgentBlock(
     name="judge",
-    model="gpt-4o",  # stronger model as evaluator
+    model="gpt-4o",
     system_prompt=(
-        "You are a senior editor. Evaluate the provided text for clarity, grammar, and tone. "
-        'Respond only with JSON: {"is_valid": true/false, "feedback": "specific improvements if rejected"}'
+        "You are a senior editor. Evaluate clarity, grammar, and tone. "
+        'Respond ONLY with JSON: {"is_valid": true/false, "feedback": "..."}'
     ),
     max_tool_calls=0,
 )
 
-loop = ValidatorLoopBlock(
+graph.add_cycle(
     name="draft_loop",
-    producer=LLMAgentBlock(name="writer", model="gpt-4o-mini", ...),
-    validator=judge,
+    edges=[("writer", "judge")],
+    condition_block="judge",
     max_iterations=3,
 )
 ```
 
+---
+
 ## How the feedback prompt is built
 
-When validation fails, the loop automatically constructs an augmented prompt for the next iteration:
+When validation fails, the executor automatically constructs an augmented prompt for the next iteration:
 
 ```
 {original prompt}
@@ -243,18 +277,22 @@ Validator feedback:
 Please correct your response taking the feedback above into account.
 ```
 
-The producer receives the full context of the failure — what it generated and why it was rejected — so it can correct itself without any extra code on your side.
+The producer receives the full context of what it generated and why it was rejected — no extra orchestration code needed.
 
-## When `validated=False` in the output
+---
 
-If the loop exhausts all `max_iterations` without the validator accepting the result, `ValidatorLoopBlock` **does not raise an exception**. Instead, it returns the last output with `validated=False`. You can decide what to do with it:
+## When `validated=False`
+
+If all iterations are exhausted without validation passing, no exception is raised. The last producer output is returned with `validated=False`:
 
 ```python
-result = await loop.run(input=ValidatorLoopInput(prompt="..."))
+# Native graph approach
+cr = ctx.cycle_results["refine_email"]
+if not cr.validated:
+    print(f"Warning: not validated after {cr.iterations} attempts.")
 
+# ValidatorLoopBlock approach
+result = await loop.run(input=ValidatorLoopInput(prompt="..."))
 if not result.validated:
-    print(f"Warning: output was not validated after {result.iterations} attempts.")
-    # fallback logic, log, escalate, etc.
-else:
-    print(result.result)
+    print(f"Warning: not validated after {result.iterations} attempts.")
 ```
