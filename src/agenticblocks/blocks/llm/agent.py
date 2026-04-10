@@ -62,8 +62,17 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
             
             message = response.choices[0].message
-            # Append dict format rather than object back to history
-            messages.append(message.model_dump(exclude_none=True))
+
+            # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
+            # corrompendo o histórico (a API exige arguments como string JSON).
+            assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
+            if message.tool_calls:
+                assistant_message["tool_calls"] = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ]
+            messages.append(assistant_message)
             
             # Se não tomou decisão de chamar ferramentas, finalizamos iterando o raciocinio e extraindo a reposta.
             if not message.tool_calls:
@@ -177,8 +186,17 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
             
             message = response.choices[0].message
-            # Append dict format rather than object back to history
-            messages.append(message.model_dump(exclude_none=True))
+
+            # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
+            # corrompendo o histórico (a API exige arguments como string JSON).
+            assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
+            if message.tool_calls:
+                assistant_message["tool_calls"] = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ]
+            messages.append(assistant_message)
             
             # Se não tomou decisão de chamar ferramentas, finalizamos iterando o raciocinio e extraindo a reposta.
             if not message.tool_calls:
