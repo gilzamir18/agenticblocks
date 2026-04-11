@@ -170,8 +170,20 @@ class WorkflowExecutor:
 
                 if i == 0:
                     # Entry block — receives the (possibly augmented) prompt
-                    block_schema  = block.input_schema()
-                    block_input   = block_schema(**current_input)
+                    block_schema = block.input_schema()
+                    try:
+                        block_input = block_schema(**current_input)
+                    except Exception:
+                        text_field = self._get_text_field(block_schema)
+                        if text_field:
+                            text_val = current_input.get("response") or current_input.get("result") or ""
+                            data = {text_field: text_val}
+                            for fname in block_schema.model_fields:
+                                if fname != text_field and fname in current_input:
+                                    data[fname] = current_input[fname]
+                            block_input = block_schema(**data)
+                        else:
+                            raise
                 else:
                     # Subsequent block — map previous output into its input
                     block_input = self._map_output_to_input(
@@ -336,8 +348,19 @@ class WorkflowExecutor:
                         data[fname] = out_data[fname]
                 return schema(**data)
 
-        # Default: direct field merge
-        return schema(**out_data)
+        # Default: direct field merge — fall back to text-field mapping if it fails
+        # (handles the common case of AgentOutput.response → AgentInput.prompt)
+        try:
+            return schema(**out_data)
+        except Exception:
+            text_field = self._get_text_field(schema)
+            if text_field:
+                data = {text_field: self._extract_text(previous_output)}
+                for fname in schema.model_fields:
+                    if fname != text_field and fname in out_data:
+                        data[fname] = out_data[fname]
+                return schema(**data)
+            raise
 
     @staticmethod
     def _get_text_field(schema: type[BaseModel]) -> Optional[str]:
