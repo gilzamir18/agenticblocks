@@ -76,10 +76,10 @@ async def main():
     graph.add_block(validate_email)  # FunctionBlock from @as_tool
 
     # Declara o ciclo: writer -> validate_email
-    # O executor itera com feedback ate validate_email retornar is_valid=True
+    # sequence=[] é o atalho para cadeias lineares (equivale a edges=[("writer", "validate_email")])
     graph.add_cycle(
         name="refine_email",
-        edges=[("writer", "validate_email")],
+        sequence=["writer", "validate_email"],
         condition_block="validate_email",
         max_iterations=3,
     )
