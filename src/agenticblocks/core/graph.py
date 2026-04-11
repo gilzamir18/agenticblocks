@@ -56,22 +56,47 @@ class WorkflowGraph:
     def add_cycle(
         self,
         name: str,
-        edges: list[tuple[str, str]],
         condition_block: str,
+        edges: list[tuple[str, str]] | None = None,
+        sequence: list[str] | None = None,
         max_iterations: int = 5,
         prompt_field: str = "prompt",
     ) -> str:
         """
         Declara um ciclo limitado no grafo.
 
-        Todos os blocos referenciados em `edges` já devem ter sido adicionados
+        Todos os blocos referenciados já devem ter sido adicionados
         via add_block(). O entry_block é detectado automaticamente como o nó
         que não possui predecessores dentro do ciclo.
+
+        Exatamente um dos parâmetros `edges` ou `sequence` deve ser fornecido:
+
+        - ``edges``: lista explícita de arestas ``(from, to)`` para topologias
+          arbitrárias (fanout, merge, etc.).
+        - ``sequence``: atalho para cadeias lineares. Passando
+          ``sequence=["A", "B", "C", "D"]`` equivale a
+          ``edges=[("A","B"), ("B","C"), ("C","D")]``.
 
         Retorna o nome do ciclo, que pode ser usado em connect() como nó virtual.
         """
         if name in self._cycles:
             raise ValueError(f"Ciclo '{name}' já existe.")
+
+        # Resolve edges from sequence shorthand or validate explicit edges
+        if edges is not None and sequence is not None:
+            raise ValueError(
+                "Forneça apenas 'edges' ou 'sequence', não os dois ao mesmo tempo."
+            )
+        if sequence is not None:
+            if len(sequence) < 2:
+                raise ValueError(
+                    "'sequence' precisa ter pelo menos 2 blocos para formar uma aresta."
+                )
+            edges = list(zip(sequence, sequence[1:]))
+        if not edges:
+            raise ValueError(
+                "Forneça 'edges' ou 'sequence' com pelo menos uma aresta."
+            )
 
         # Collect member block names from edges
         members = list({n for edge in edges for n in edge})

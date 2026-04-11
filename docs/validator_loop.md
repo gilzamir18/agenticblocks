@@ -67,8 +67,8 @@ graph.add_block(validate_email)
 
 graph.add_cycle(
     name="refine_email",
-    edges=[("writer", "validate_email")],  # data flow inside the cycle
-    condition_block="validate_email",       # controls is_valid / feedback
+    sequence=["writer", "validate_email"],  # linear chain shorthand
+    condition_block="validate_email",        # controls is_valid / feedback
     max_iterations=3,
 )
 
@@ -94,10 +94,13 @@ asyncio.run(main())
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `name` | `str` | required | Unique cycle identifier; acts as a virtual node in the graph. |
-| `edges` | `list[tuple[str, str]]` | required | Directed edges `(from, to)` between blocks **inside** the cycle. |
 | `condition_block` | `str` | required | Name of the block whose output controls continuation. Must return `is_valid` and optionally `feedback`. |
+| `edges` | `list[tuple[str, str]] \| None` | `None` | Explicit directed edges `(from, to)` inside the cycle. Use for non-linear topologies (fanout, merge). Mutually exclusive with `sequence`. |
+| `sequence` | `list[str] \| None` | `None` | Shorthand for linear chains. `sequence=["A","B","C"]` expands to `edges=[("A","B"),("B","C")]`. Mutually exclusive with `edges`. |
 | `max_iterations` | `int` | `5` | Maximum iterations before giving up. Result is returned with `validated=False`. |
 | `prompt_field` | `str` | `"prompt"` | Field on the entry block's input schema that receives the augmented feedback prompt. |
+
+> **Note:** Exactly one of `edges` or `sequence` must be provided. Supplying both raises `ValueError`.
 
 The **entry block** (first to receive input) is auto-detected as the cycle member with no incoming internal edges.
 
@@ -118,7 +121,11 @@ print(cr.output)       # BaseModel — producer's last output
 
 ### Multi-block cycles
 
-Cycles are not limited to a producer + validator pair. Any linear chain works:
+Cycles are not limited to a producer + validator pair. Any linear chain works.
+
+#### Using `sequence` (recommended for linear chains)
+
+Pass the ordered list of block names; edges are derived automatically via consecutive pairs:
 
 ```python
 graph.add_block(writer)
@@ -127,13 +134,32 @@ graph.add_block(validator)
 
 graph.add_cycle(
     name="full_pipeline",
-    edges=[("writer", "formatter"), ("formatter", "validator")],
+    sequence=["writer", "formatter", "validator"],  # same as edges below
     condition_block="validator",
     max_iterations=4,
 )
 ```
 
-The executor runs `writer → formatter → validator` on each iteration. The cycle output is `formatter`'s last output (the last non-condition block).
+#### Using `edges` (required for non-linear topologies)
+
+Use `edges` when the internal data flow is not a simple chain — for example, a fanout or a merge:
+
+```python
+# writer branches to two reviewers, both feed a merger
+graph.add_cycle(
+    name="review_pipeline",
+    edges=[
+        ("writer", "reviewer_a"),
+        ("writer", "reviewer_b"),
+        ("reviewer_a", "merger"),
+        ("reviewer_b", "merger"),
+    ],
+    condition_block="merger",
+    max_iterations=3,
+)
+```
+
+The executor runs `writer → formatter → validator` (or your custom topology) on each iteration. The cycle output is the last non-condition block's output.
 
 ---
 
