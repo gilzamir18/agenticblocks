@@ -26,10 +26,12 @@ class WorkflowExecutor:
         graph: WorkflowGraph,
         on_node_start: Callable[[str], None] | None = None,
         on_node_end:   Callable[[NodeResult], None] | None = None,
+        verbose: bool = True,
     ):
         self.graph         = graph
         self.on_node_start = on_node_start
         self.on_node_end   = on_node_end
+        self.verbose       = verbose
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -148,7 +150,8 @@ class WorkflowExecutor:
         cycle = self.graph._cycles[cycle_name]
         g     = self.graph.graph
 
-        print(f"\n[Cycle:{cycle_name}] Starting (max {cycle.max_iterations} iterations)")
+        if self.verbose:
+            print(f"\n[Cycle:{cycle_name}] Starting (max {cycle.max_iterations} iterations)")
 
         # ── Collect initial input from outside the cycle ──────────────────
         input_data      = self._collect_cycle_entry_inputs(cycle, ctx)
@@ -161,7 +164,8 @@ class WorkflowExecutor:
         last_producer_output: Optional[BaseModel] = None
 
         for iteration in range(1, cycle.max_iterations + 1):
-            print(f"[Cycle:{cycle_name}] Iteration {iteration}/{cycle.max_iterations}")
+            if self.verbose:
+                print(f"[Cycle:{cycle_name}] Iteration {iteration}/{cycle.max_iterations}")
 
             current_output: Optional[BaseModel] = None
 
@@ -212,11 +216,12 @@ class WorkflowExecutor:
             )
 
             producer_text = self._extract_text(last_producer_output)
-            print(
-                f"[Cycle:{cycle_name}] Valid: {is_valid}"
-                + (f" | Feedback: {feedback}" if not is_valid else "")
-            )
-            print(f"[Cycle:{cycle_name}] Output: {producer_text[:100]}...")
+            if self.verbose:
+                print(
+                    f"[Cycle:{cycle_name}] Valid: {is_valid}"
+                    + (f" | Feedback: {feedback}" if not is_valid else "")
+                )
+                print(f"[Cycle:{cycle_name}] Output: {producer_text[:100]}...")
 
             if is_valid:
                 await ctx.set_cycle_result(
@@ -242,7 +247,8 @@ class WorkflowExecutor:
             current_input[cycle.prompt_field] = augmented
 
         # Max iterations reached without validation
-        print(f"[Cycle:{cycle_name}] Max iterations reached — returning last output.")
+        if self.verbose:
+            print(f"[Cycle:{cycle_name}] Max iterations reached — returning last output.")
         await ctx.set_cycle_result(
             cycle_name,
             CycleResult(
