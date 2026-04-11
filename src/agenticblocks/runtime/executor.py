@@ -236,13 +236,20 @@ class WorkflowExecutor:
                 return
 
             # ── Augment prompt with feedback for next iteration ────────────
-            augmented = (
-                f"{original_prompt}\n\n"
-                f"--- Attempt {iteration} (rejected) ---\n"
-                f"Your previous response was:\n{producer_text}\n\n"
-                f"Validator feedback:\n{feedback}\n\n"
-                f"Please correct your response taking the feedback above into account."
-            )
+            if cycle.augment_fn is not None:
+                # Modo customizado: o chamador controla totalmente o próximo prompt.
+                augmented = cycle.augment_fn(
+                    original_prompt, iteration, producer_text, feedback
+                )
+            else:
+                # Modo padrão (refinamento): injeta o feedback num template fixo.
+                augmented = (
+                    f"{original_prompt}\n\n"
+                    f"--- Attempt {iteration} (rejected) ---\n"
+                    f"Your previous response was:\n{producer_text}\n\n"
+                    f"Validator feedback:\n{feedback}\n\n"
+                    f"Please correct your response taking the feedback above into account."
+                )
             current_input = input_data.copy()
             current_input[cycle.prompt_field] = augmented
 
