@@ -1,6 +1,6 @@
 import networkx as nx
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 from .block import Block
 from pydantic import BaseModel
 
@@ -21,6 +21,9 @@ class CycleGroup:
         entry_block:      Bloco que recebe o prompt aumentado com o feedback a cada re-tentativa.
         max_iterations:   Máximo de iterações antes de desistir.
         prompt_field:     Campo do input do entry_block a ser aumentado com o feedback.
+        augment_fn:       Callable opcional para montar o prompt da próxima iteração.
+                          Assinatura: (original_prompt, iteration, producer_text, feedback) -> str.
+                          Quando None, usa o comportamento padrão de refinamento.
     """
     name: str
     members: list[str]
@@ -29,6 +32,7 @@ class CycleGroup:
     entry_block: str
     max_iterations: int = 5
     prompt_field: str = "prompt"
+    augment_fn: Optional[Callable[[str, int, str, str], str]] = None
 
 
 class WorkflowGraph:
@@ -61,6 +65,7 @@ class WorkflowGraph:
         sequence: list[str] | None = None,
         max_iterations: int = 5,
         prompt_field: str = "prompt",
+        augment_fn: Optional[Callable[[str, int, str, str], str]] = None,
     ) -> str:
         """
         Declara um ciclo limitado no grafo.
@@ -138,6 +143,7 @@ class WorkflowGraph:
             entry_block=entry_block,
             max_iterations=max_iterations,
             prompt_field=prompt_field,
+            augment_fn=augment_fn,
         )
         self._cycles[name] = cycle
         for m in members:
