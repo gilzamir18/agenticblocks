@@ -21,6 +21,11 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     tools: List[Block] = []
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
+    on_max_iterations: str = "stop"
+    """Comportamento ao atingir max_iterations.
+    - "stop"        : retorna mensagem fixa de parada (padrão, retrocompatível).
+    - "return_last" : retorna a última resposta de texto válida produzida pelo LLM.
+    """
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
     
     model_config = {"arbitrary_types_allowed": True}
@@ -37,9 +42,15 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         
         tool_call_count = 0
         iteration_count = 0
+        last_response: str = ""
         
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
+                if self.on_max_iterations == "return_last":
+                    return AgentOutput(
+                        response=last_response,
+                        tool_calls_made=tool_call_count
+                    )
                 return AgentOutput(
                     response="Agent stopped: Max iterations reached.",
                     tool_calls_made=tool_call_count
@@ -62,6 +73,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
             
             message = response.choices[0].message
+
+            # Rastreia o último texto produzido pelo LLM (usado por on_max_iterations="return_last")
+            if message.content:
+                last_response = message.content
 
             # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
             # corrompendo o histórico (a API exige arguments como string JSON).
@@ -144,6 +159,11 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     tools: List[Block] = []
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
+    on_max_iterations: str = "stop"
+    """Comportamento ao atingir max_iterations.
+    - "stop"        : retorna mensagem fixa de parada (padrão, retrocompatível).
+    - "return_last" : retorna a última resposta de texto válida produzida pelo LLM.
+    """
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
     
     model_config = {"arbitrary_types_allowed": True}
@@ -160,9 +180,15 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         
         tool_call_count = 0
         iteration_count = 0
+        last_response: str = ""
         
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
+                if self.on_max_iterations == "return_last":
+                    return AgentOutput(
+                        response=last_response,
+                        tool_calls_made=tool_call_count
+                    )
                 return AgentOutput(
                     response="Agent stopped: Max iterations reached.",
                     tool_calls_made=tool_call_count
@@ -186,6 +212,10 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
             
             message = response.choices[0].message
+
+            # Rastreia o último texto produzido pelo LLM (usado por on_max_iterations="return_last")
+            if message.content:
+                last_response = message.content
 
             # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
             # corrompendo o histórico (a API exige arguments como string JSON).
