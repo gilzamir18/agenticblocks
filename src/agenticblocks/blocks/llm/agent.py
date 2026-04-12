@@ -47,9 +47,19 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
+                    if last_response:
+                        # Há texto válido salvo: retorna diretamente.
+                        return AgentOutput(response=last_response, tool_calls_made=tool_call_count)
+                    # O modelo só fez tool calls — força uma resposta final sem ferramentas.
+                    final_kwargs = self.litellm_kwargs.copy()
+                    final_kwargs.pop("tools", None)
+                    final_kwargs.pop("tool_choice", None)
+                    final_resp = await litellm.acompletion(
+                        model=self.model, messages=messages, **final_kwargs
+                    )
                     return AgentOutput(
-                        response=last_response,
-                        tool_calls_made=tool_call_count
+                        response=final_resp.choices[0].message.content or "",
+                        tool_calls_made=tool_call_count,
                     )
                 return AgentOutput(
                     response="Agent stopped: Max iterations reached.",
@@ -185,9 +195,20 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
+                    if last_response:
+                        # Há texto válido salvo: retorna diretamente.
+                        return AgentOutput(response=last_response, tool_calls_made=tool_call_count)
+                    # O modelo só fez tool calls — força uma resposta final sem ferramentas.
+                    router = _get_shared_router(self.model)
+                    final_kwargs = self.litellm_kwargs.copy()
+                    final_kwargs.pop("tools", None)
+                    final_kwargs.pop("tool_choice", None)
+                    final_resp = await router.acompletion(
+                        model=self.model, messages=messages, **final_kwargs
+                    )
                     return AgentOutput(
-                        response=last_response,
-                        tool_calls_made=tool_call_count
+                        response=final_resp.choices[0].message.content or "",
+                        tool_calls_made=tool_call_count,
                     )
                 return AgentOutput(
                     response="Agent stopped: Max iterations reached.",
