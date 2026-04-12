@@ -53,6 +53,34 @@ class WorkflowGraph:
         self.graph.add_node(node_id, block=block)
         return node_id
 
+    def add_sequence(self, *blocks: Block) -> list[str]:
+        """
+        Registra blocos e os conecta linearmente em uma única chamada.
+
+            graph.add_sequence(A, B, C)
+
+        É equivalente a:
+
+            graph.add_block(A)
+            graph.add_block(B)
+            graph.add_block(C)
+            graph.connect("A", "B")
+            graph.connect("B", "C")
+
+        Retorna a lista de node_ids na ordem fornecida.
+        """
+        if len(blocks) < 2:
+            raise ValueError(
+                "add_sequence() requer pelo menos 2 blocos para formar uma sequência."
+            )
+        names: list[str] = []
+        for block in blocks:
+            name = self.add_block(block)
+            if names:
+                self.connect(names[-1], name)
+            names.append(name)
+        return names
+
     # ------------------------------------------------------------------
     # Cycle declaration
     # ------------------------------------------------------------------
