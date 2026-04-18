@@ -1,4 +1,6 @@
 import json
+import time
+from collections import defaultdict
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import litellm
@@ -14,82 +16,138 @@ class AgentOutput(BaseModel):
     response: str
     tool_calls_made: int = 0
 
+
+def _print_debug_report(
+    *,
+    agent_name: str,
+    model: str,
+    iteration_count: int,
+    tool_call_count: int,
+    tool_usage: Dict[str, int],
+    termination_reason: str,
+    elapsed_seconds: float,
+) -> None:
+    """Print a structured debug report in English after an agent run."""
+    sep = "─" * 56
+    print(f"\n{'═' * 56}")
+    print(f"  [DEBUG] Agent Run Report — {agent_name}")
+    print(f"{'═' * 56}")
+    print(f"  Model              : {model}")
+    print(f"  Total iterations   : {iteration_count}")
+    print(f"  Total tool calls   : {tool_call_count}")
+    print(f"  Elapsed time       : {elapsed_seconds:.3f}s")
+    print(f"  Termination reason : {termination_reason}")
+    print(sep)
+    if tool_usage:
+        print("  Tool usage breakdown:")
+        for tool_name, count in sorted(tool_usage.items(), key=lambda x: -x[1]):
+            print(f"    • {tool_name:<30} {count:>3} call(s)")
+    else:
+        print("  No tools were used — response based entirely on the model.")
+    print(f"{'═' * 56}\n")
+
+
 class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
-    description: str = "Agente Autônomo Baseado em LLM gerenciando seu próprio Tool Loop."
+    description: str = "Autonomous LLM-based Agent managing its own tool loop."
     model: str = "gpt-4o-mini"
-    system_prompt: str = "Você é um Agente Analista e Roteador prestativo. Use as ferramentas caso não possua contexto."
+    system_prompt: str = "You are a helpful Analyst and Router Agent. Use the available tools when you lack context."
     tools: List[Block] = []
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
     on_max_iterations: str = "stop"
-    """Comportamento ao atingir max_iterations.
-    - "stop"        : retorna mensagem fixa de parada (padrão, retrocompatível).
-    - "return_last" : retorna a última resposta de texto válida produzida pelo LLM.
+    """Behaviour when max_iterations is reached.
+    - "stop"        : return a fixed stop message (default, backward-compatible).
+    - "return_last" : force a final LLM call (no tools) to synthesise accumulated
+                      context into clean plain text.
     """
+    synthesis_prompt: str = (
+        "Based on everything researched above, write your final answer now "
+        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting."
+    )
+    debug: bool = False
+    """When True, print a structured debug report at the end of each run."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
-    
+
     model_config = {"arbitrary_types_allowed": True}
-    
+
     async def run(self, input: AgentInput) -> AgentOutput:
-        # Transparent A2A Bridging 
-        # Converter qualquer Sub-Bloco para Tool API Formats
+        start_time = time.monotonic()
+
+        # Transparent A2A Bridging: convert any sub-block into the Tool API format.
         litellm_tools = [block_to_tool_schema(b) for b in self.tools]
-        
+
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": input.prompt}
         ]
-        
+
         tool_call_count = 0
         iteration_count = 0
         last_response: str = ""
-        
+        tool_usage: Dict[str, int] = defaultdict(int)
+        termination_reason: str = "unknown"
+
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
-                    if last_response:
-                        # Há texto válido salvo: retorna diretamente.
-                        return AgentOutput(response=last_response, tool_calls_made=tool_call_count)
-                    # O modelo só fez tool calls — força uma resposta final sem ferramentas.
+                    # Force a final LLM call without tools so the model synthesises
+                    # the accumulated context. Synthesis instructions should live in
+                    # the system_prompt — no extra message is injected here.
                     final_kwargs = self.litellm_kwargs.copy()
                     final_kwargs.pop("tools", None)
                     final_kwargs.pop("tool_choice", None)
                     final_resp = await litellm.acompletion(
                         model=self.model, messages=messages, **final_kwargs
                     )
-                    return AgentOutput(
-                        response=final_resp.choices[0].message.content or "",
+                    termination_reason = "max_iterations reached → synthesised final response"
+                    output = AgentOutput(
+                        response=final_resp.choices[0].message.content or last_response,
                         tool_calls_made=tool_call_count,
                     )
-                return AgentOutput(
-                    response="Agent stopped: Max iterations reached.",
-                    tool_calls_made=tool_call_count
-                )
-                
+                else:
+                    termination_reason = "max_iterations reached → stopped"
+                    output = AgentOutput(
+                        response="Agent stopped: Max iterations reached.",
+                        tool_calls_made=tool_call_count
+                    )
+
+                if self.debug:
+                    _print_debug_report(
+                        agent_name=self.name,
+                        model=self.model,
+                        iteration_count=iteration_count,
+                        tool_call_count=tool_call_count,
+                        tool_usage=dict(tool_usage),
+                        termination_reason=termination_reason,
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                return output
+
             iteration_count += 1
-            
-            # Argumentos opcionais caso ferramentas existam no escopo do Agente e os args persistentes base
+
+            # Build optional kwargs: include tools when available; block new tool
+            # calls once the per-run limit has been reached.
             kwargs = self.litellm_kwargs.copy()
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
-                # Após atingir o limite de chamadas, proíbe novas ferramentas
                 kwargs["tool_choice"] = "none" if tool_call_count >= self.max_tool_calls else "auto"
-            
-            # Chamada principal com LiteLLM
+
+            # Main LiteLLM call.
             response = await litellm.acompletion(
                 model=self.model,
                 messages=messages,
                 **kwargs
             )
-            
+
             message = response.choices[0].message
 
-            # Rastreia o último texto produzido pelo LLM (usado por on_max_iterations="return_last")
+            # Track the last text produced by the LLM (used by on_max_iterations="return_last").
             if message.content:
                 last_response = message.content
 
-            # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
-            # corrompendo o histórico (a API exige arguments como string JSON).
+            # Build the assistant message dict manually: model_dump() deserialises
+            # `arguments` into a dict, corrupting the history (the API requires
+            # arguments to be a JSON string).
             assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
             if message.tool_calls:
                 assistant_message["tool_calls"] = [
@@ -98,39 +156,52 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     for tc in message.tool_calls
                 ]
             messages.append(assistant_message)
-            
-            # Se não tomou decisão de chamar ferramentas, finalizamos iterando o raciocinio e extraindo a reposta.
+
+            # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
-                return AgentOutput(
+                termination_reason = "model returned a final text response (no tool calls)"
+                output = AgentOutput(
                     response=message.content or "",
                     tool_calls_made=tool_call_count
                 )
-                
-            # Transparent Execution! (A2A e MCP)
+                if self.debug:
+                    _print_debug_report(
+                        agent_name=self.name,
+                        model=self.model,
+                        iteration_count=iteration_count,
+                        tool_call_count=tool_call_count,
+                        tool_usage=dict(tool_usage),
+                        termination_reason=termination_reason,
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                return output
+
+            # Transparent Execution (A2A and MCP).
             for tool_call in message.tool_calls:
                 tool_call_count += 1
                 function_name = tool_call.function.name
-                
-                # Procura a ferramenta nativa (Blocos conectados)
+                tool_usage[function_name] += 1
+
+                # Look for the matching native tool (connected blocks).
                 matched_block = next((b for b in self.tools if b.name == function_name), None)
                 if not matched_block:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": f"Tool {function_name} not found."})
+                        "content": json.dumps({"error": f"Tool '{function_name}' not found."})
                     })
                     continue
-                    
+
                 try:
-                    # Roda o Pydantic Parse para o Bloco A2A dinamicamente
+                    # Parse arguments with the block's Pydantic input model (A2A bridge).
                     args_dict = json.loads(tool_call.function.arguments)
                     input_model = matched_block.input_schema()(**args_dict)
-                    
-                    # RUN: O Agente principal engatilha um Agente Subordinado de forma transparente (A2A)!
+
+                    # RUN: the main agent transparently triggers a subordinate agent (A2A).
                     result = await matched_block.run(input=input_model)
-                    
-                    # O output tipado retorna ao escopo original do LiteLLM como JSON
+
+                    # The typed output is serialised back to JSON for LiteLLM's history.
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -146,13 +217,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     })
 
 
-# Registry de Routers compartilhados por modelo — padrão Flyweight.
-# LiteLLM.Router gerencia pooling de conexões; o mesmo Router é reutilizado
-# para todas as instâncias de bloco que usam o mesmo modelo.
+# Registry of routers shared by model — Flyweight pattern.
+# LiteLLM.Router manages connection pooling; the same Router is reused
+# for all block instances that target the same model.
 _router_registry: Dict[str, litellm.Router] = {}
 
 def _get_shared_router(model: str) -> litellm.Router:
-    """Retorna (criando se necessário) um Router compartilhado para o modelo."""
+    """Return (creating if necessary) a shared Router for the given model."""
     if model not in _router_registry:
         _router_registry[model] = litellm.Router(
             model_list=[{
@@ -163,42 +234,51 @@ def _get_shared_router(model: str) -> litellm.Router:
     return _router_registry[model]
 
 class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
-    description: str = "Agente Autônomo Baseado em LLM gerenciando seu próprio Tool Loop."
+    description: str = "Autonomous LLM-based Agent managing its own tool loop (shared router)."
     model: str = "gpt-4o-mini"
-    system_prompt: str = "Você é um Agente Analista e Roteador prestativo. Use as ferramentas caso não possua contexto."
+    system_prompt: str = "You are a helpful Analyst and Router Agent. Use the available tools when you lack context."
     tools: List[Block] = []
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
     on_max_iterations: str = "stop"
-    """Comportamento ao atingir max_iterations.
-    - "stop"        : retorna mensagem fixa de parada (padrão, retrocompatível).
-    - "return_last" : retorna a última resposta de texto válida produzida pelo LLM.
+    """Behaviour when max_iterations is reached.
+    - "stop"        : return a fixed stop message (default, backward-compatible).
+    - "return_last" : force a final LLM call (no tools) to synthesise accumulated
+                      context into clean plain text.
     """
+    synthesis_prompt: str = (
+        "Based on everything researched above, write your final answer now "
+        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting."
+    )
+    debug: bool = False
+    """When True, print a structured debug report at the end of each run."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
-    
+
     model_config = {"arbitrary_types_allowed": True}
-    
+
     async def run(self, input: AgentInput) -> AgentOutput:
-        # Transparent A2A Bridging 
-        # Converter qualquer Sub-Bloco para Tool API Formats
+        start_time = time.monotonic()
+
+        # Transparent A2A Bridging: convert any sub-block into the Tool API format.
         litellm_tools = [block_to_tool_schema(b) for b in self.tools]
-        
+
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": input.prompt}
         ]
-        
+
         tool_call_count = 0
         iteration_count = 0
         last_response: str = ""
-        
+        tool_usage: Dict[str, int] = defaultdict(int)
+        termination_reason: str = "unknown"
+
         while True:
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
-                    if last_response:
-                        # Há texto válido salvo: retorna diretamente.
-                        return AgentOutput(response=last_response, tool_calls_made=tool_call_count)
-                    # O modelo só fez tool calls — força uma resposta final sem ferramentas.
+                    # Force a final LLM call without tools so the model synthesises
+                    # the accumulated context. Synthesis instructions should live in
+                    # the system_prompt — no extra message is injected here.
                     router = _get_shared_router(self.model)
                     final_kwargs = self.litellm_kwargs.copy()
                     final_kwargs.pop("tools", None)
@@ -206,40 +286,56 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     final_resp = await router.acompletion(
                         model=self.model, messages=messages, **final_kwargs
                     )
-                    return AgentOutput(
-                        response=final_resp.choices[0].message.content or "",
+                    termination_reason = "max_iterations reached → synthesised final response"
+                    output = AgentOutput(
+                        response=final_resp.choices[0].message.content or last_response,
                         tool_calls_made=tool_call_count,
                     )
-                return AgentOutput(
-                    response="Agent stopped: Max iterations reached.",
-                    tool_calls_made=tool_call_count
-                )
-                
+                else:
+                    termination_reason = "max_iterations reached → stopped"
+                    output = AgentOutput(
+                        response="Agent stopped: Max iterations reached.",
+                        tool_calls_made=tool_call_count
+                    )
+
+                if self.debug:
+                    _print_debug_report(
+                        agent_name=self.name,
+                        model=self.model,
+                        iteration_count=iteration_count,
+                        tool_call_count=tool_call_count,
+                        tool_usage=dict(tool_usage),
+                        termination_reason=termination_reason,
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                return output
+
             iteration_count += 1
-            
-            # Argumentos opcionais caso ferramentas existam no escopo do Agente e os args persistentes base
+
+            # Build optional kwargs: include tools when available; block new tool
+            # calls once the per-run limit has been reached.
             kwargs = self.litellm_kwargs.copy()
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
-                # Após atingir o limite de chamadas, proíbe novas ferramentas
                 kwargs["tool_choice"] = "none" if tool_call_count >= self.max_tool_calls else "auto"
-            
-            # Chamada principal via Router compartilhado (instância única por modelo)
+
+            # Main call via the shared Router (single instance per model).
             router = _get_shared_router(self.model)
             response = await router.acompletion(
                 model=self.model,
                 messages=messages,
                 **kwargs
             )
-            
+
             message = response.choices[0].message
 
-            # Rastreia o último texto produzido pelo LLM (usado por on_max_iterations="return_last")
+            # Track the last text produced by the LLM (used by on_max_iterations="return_last").
             if message.content:
                 last_response = message.content
 
-            # Constrói o dict manualmente: model_dump() desserializa arguments para dict,
-            # corrompendo o histórico (a API exige arguments como string JSON).
+            # Build the assistant message dict manually: model_dump() deserialises
+            # `arguments` into a dict, corrupting the history (the API requires
+            # arguments to be a JSON string).
             assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
             if message.tool_calls:
                 assistant_message["tool_calls"] = [
@@ -248,42 +344,52 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     for tc in message.tool_calls
                 ]
             messages.append(assistant_message)
-            
-            # Se não tomou decisão de chamar ferramentas, finalizamos iterando o raciocinio e extraindo a reposta.
+
+            # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
-                return AgentOutput(
+                termination_reason = "model returned a final text response (no tool calls)"
+                output = AgentOutput(
                     response=message.content or "",
                     tool_calls_made=tool_call_count
                 )
-                
-            # Transparent Execution! (A2A e MCP)
+                if self.debug:
+                    _print_debug_report(
+                        agent_name=self.name,
+                        model=self.model,
+                        iteration_count=iteration_count,
+                        tool_call_count=tool_call_count,
+                        tool_usage=dict(tool_usage),
+                        termination_reason=termination_reason,
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                return output
+
+            # Transparent Execution (A2A and MCP).
             for tool_call in message.tool_calls:
                 tool_call_count += 1
                 function_name = tool_call.function.name
-                
-                # Procura a ferramenta nativa (Blocos conectados)
+                tool_usage[function_name] += 1
+
+                # Look for the matching native tool (connected blocks).
                 matched_block = next((b for b in self.tools if b.name == function_name), None)
                 if not matched_block:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": f"Tool {function_name} not found."})
+                        "content": json.dumps({"error": f"Tool '{function_name}' not found."})
                     })
                     continue
-                    
+
                 try:
-                    # Roda o Pydantic Parse para o Bloco A2A dinamicamente
+                    # Parse arguments with the block's Pydantic input model (A2A bridge).
                     args_dict = json.loads(tool_call.function.arguments)
                     input_model = matched_block.input_schema()(**args_dict)
-                    
-                    # RUN: O Agente principal engatilha um Agente Subordinado de forma transparente (A2A)!
+
+                    # RUN: the main agent transparently triggers a subordinate agent (A2A).
                     result = await matched_block.run(input=input_model)
-                    # O output tipado retorna ao escopo original do LiteLLM como JSON
-                    #if isinstance(result, AgentOutput):
-                    #    result = result.response
-                    #else:
-                    #    result = result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result
+
+                    # The typed output is serialised back to JSON for LiteLLM's history.
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -298,9 +404,9 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         "content": json.dumps({"error": str(e)})
                     })
 
-            # Se atingiu o limite de tool calls, força uma resposta final sem ferramentas.
-            # Necessário porque alguns modelos (ex: Ollama) ignoram tool_choice="none"
-            # causando loop infinito.
+            # If the tool-call limit was reached, force a final response without tools.
+            # This is necessary because some models (e.g. Ollama) ignore
+            # tool_choice="none", causing an infinite loop.
             if tool_call_count >= self.max_tool_calls:
                 final_kwargs = self.litellm_kwargs.copy()
                 final_kwargs.pop("tool_choice", None)
@@ -309,7 +415,19 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     messages=messages,
                     **final_kwargs
                 )
-                return AgentOutput(
+                termination_reason = f"max_tool_calls ({self.max_tool_calls}) reached → forced final response"
+                output = AgentOutput(
                     response=final_response.choices[0].message.content or "",
                     tool_calls_made=tool_call_count
                 )
+                if self.debug:
+                    _print_debug_report(
+                        agent_name=self.name,
+                        model=self.model,
+                        iteration_count=iteration_count,
+                        tool_call_count=tool_call_count,
+                        tool_usage=dict(tool_usage),
+                        termination_reason=termination_reason,
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                return output

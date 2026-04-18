@@ -1,13 +1,13 @@
 """
-validator_loop.py — Bloco de orquestração que implementa um ciclo
-Produtor → Validador com feedback iterativo.
+validator_loop.py — Orchestration block that implements an iterative
+Producer → Validator cycle with feedback.
 
-Fluxo:
-    1. Chama A(y)  → x
-    2. Chama VALIDATOR(x) → ValidationResult
-    3. Se válido  → retorna x como saída final.
-    4. Se inválido → atualiza y com feedback de VALIDATOR e volta ao passo 1.
-    5. Repete até validar ou atingir max_iterations.
+Flow:
+    1. Call A(y)  → x
+    2. Call VALIDATOR(x) → ValidationResult
+    3. If valid   → return x as final output.
+    4. If invalid → update y with VALIDATOR feedback and go back to step 1.
+    5. Repeat until validated or max_iterations is reached.
 """
 
 from typing import Any, Type
@@ -26,12 +26,12 @@ class ValidatorLoopInput(BaseModel):
 
 class ValidationResult(BaseModel):
     """
-    Retorno esperado do bloco VALIDADOR.
+    Expected return type from the VALIDATOR block.
 
-    Campos:
-        is_valid: True se a saída do produtor é aceita.
-        feedback: Mensagem de feedback a ser enviada ao produtor em caso de falha.
-                  Ignorado se is_valid=True.
+    Fields:
+        is_valid: True if the producer's output is accepted.
+        feedback: Feedback message to send to the producer on failure.
+                  Ignored if is_valid=True.
     """
     is_valid: bool
     feedback: str = ""
@@ -49,18 +49,18 @@ class ValidatorLoopOutput(BaseModel):
 
 class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
     """
-    Orquestra um ciclo de produção com feedback iterativo:
+    Orchestrates a production cycle with iterative feedback:
 
-        A(y) → x  →  VALIDATOR(x)  →  válido? → fim
-                                     ↑       ↓ não
+        A(y) → x  →  VALIDATOR(x)  →  valid? → done
+                                     ↑       ↓ no
                                      └── y += feedback(x)
 
-    O Bloco Produtor deve expor input_schema() com campo `prompt: str`.
-    O Bloco Validador deve expor input_schema() com campo `content: str`
-    e retornar um modelo compatível com ValidationResult (is_valid, feedback).
+    The Producer Block must expose input_schema() with a `prompt: str` field.
+    The Validator Block must expose input_schema() with a `content: str` field
+    and return a model compatible with ValidationResult (is_valid, feedback).
     """
 
-    description: str = "Loop de produção com validação iterativa e feedback."
+    description: str = "Production loop with iterative validation and feedback."
     producer: Any   # Block[AgentInput-like, AgentOutput-like]
     validator: Any  # Block[ValidatorInput-like, ValidationResult-like]
     max_iterations: int = 5
@@ -74,14 +74,14 @@ class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
 
         for iteration in range(1, self.max_iterations + 1):
             iterations = iteration
-            print(f"\n[ValidatorLoop] Iteração {iteration}/{self.max_iterations}")
+            print(f"\n[ValidatorLoop] Iteration {iteration}/{self.max_iterations}")
 
-            # ── Passo 1: Produtor gera saída ──────────────────────────────
+            # ── Step 1: Producer generates output ─────────────────────────
             producer_schema: Type[BaseModel] = self.producer.input_schema()
             producer_input = producer_schema(prompt=current_prompt)
             producer_result = await self.producer.run(input=producer_input)
 
-            # Extrai texto: suporta AgentOutput.response, FunctionOutput.result e genérico
+            # Extract text: supports AgentOutput.response, FunctionOutput.result and generic
             if hasattr(producer_result, "response"):
                 last_output_str = producer_result.response
             elif hasattr(producer_result, "result"):
@@ -89,21 +89,21 @@ class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
             else:
                 last_output_str = str(producer_result.model_dump())
 
-            print(f"[ValidatorLoop] Saída do produtor: {last_output_str[:120]}...")
+            print(f"[ValidatorLoop] Producer output: {last_output_str[:120]}...")
 
-            # ── Passo 2: Validador avalia a saída ─────────────────────────
+            # ── Step 2: Validator evaluates the output ─────────────────────
             validator_schema: Type[BaseModel] = self.validator.input_schema()
             validator_input = validator_schema(content=last_output_str)
             validator_result = await self.validator.run(input=validator_input)
 
-            # Normaliza o resultado do validador para (is_valid, feedback).
-            # Suporta 3 formatos:
+            # Normalise the validator result to (is_valid, feedback).
+            # Supports 3 formats:
             #   a) ValidationResult                    → .is_valid / .feedback
-            #   b) FunctionOutput(result={...})        → @as_tool retornando dict
-            #   c) AgentOutput(response="{...}")       → LLMAgentBlock retornando JSON
+            #   b) FunctionOutput(result={...})        → @as_tool returning dict
+            #   c) AgentOutput(response="{...}")       → LLMAgentBlock returning JSON
             is_valid, feedback = self._extract_validation(validator_result)
 
-            print(f"[ValidatorLoop] Válido: {is_valid}" +
+            print(f"[ValidatorLoop] Valid: {is_valid}" +
                   (f" | Feedback: {feedback}" if not is_valid else ""))
 
             if is_valid:
@@ -113,17 +113,17 @@ class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
                     validated=True,
                 )
 
-            # ── Passo 3: Atualiza o prompt com o feedback ─────────────────
+            # ── Step 3: Update the prompt with feedback ───────────────────
             current_prompt = (
                 f"{input.prompt}\n\n"
-                f"--- Tentativa {iteration} (rejeitada) ---\n"
-                f"Sua resposta anterior foi:\n{last_output_str}\n\n"
-                f"Feedback do validador:\n{feedback}\n\n"
-                f"Por favor, corrija sua resposta levando em conta o feedback acima."
+                f"--- Attempt {iteration} (rejected) ---\n"
+                f"Your previous response was:\n{last_output_str}\n\n"
+                f"Validator feedback:\n{feedback}\n\n"
+                f"Please correct your response taking the feedback above into account."
             )
 
-        # Esgotou iterações sem validação
-        print(f"[ValidatorLoop] Limite de {self.max_iterations} iterações atingido.")
+        # Max iterations exhausted without validation
+        print(f"[ValidatorLoop] Limit of {self.max_iterations} iterations reached.")
         return ValidatorLoopOutput(
             result=last_output_str,
             iterations=iterations,
@@ -133,23 +133,23 @@ class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
     @staticmethod
     def _extract_validation(result: Any) -> tuple[bool, str]:
         """
-        Extrai (is_valid, feedback) de qualquer formato de saída do validador:
-        - ValidationResult / qualquer BaseModel com is_valid
-        - FunctionOutput(result=dict)         — @as_tool retornando dict
-        - AgentOutput / qualquer BaseModel com response contendo JSON
+        Extracts (is_valid, feedback) from any validator output format:
+        - ValidationResult / any BaseModel with is_valid
+        - FunctionOutput(result=dict)         — @as_tool returning dict
+        - AgentOutput / any BaseModel with response containing JSON
         """
         import json, re
 
-        # a) Modelo com is_valid diretamente (ValidationResult)
+        # a) Model with is_valid directly (ValidationResult)
         if hasattr(result, "is_valid"):
             return result.is_valid, getattr(result, "feedback", "")
 
-        # b) FunctionOutput(result=dict) — @as_tool retornando dict
+        # b) FunctionOutput(result=dict) — @as_tool returning dict
         raw = getattr(result, "result", None)
         if isinstance(raw, dict):
             return bool(raw.get("is_valid", False)), raw.get("feedback", "")
 
-        # c) AgentOutput / FunctionOutput(result=str) — tenta parsear JSON
+        # c) AgentOutput / FunctionOutput(result=str) — try to parse JSON
         text = ""
         if hasattr(result, "response"):
             text = result.response or ""
@@ -164,6 +164,6 @@ class ValidatorLoopBlock(Block[ValidatorLoopInput, ValidatorLoopOutput]):
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: inválido com mensagem de erro
-        return False, f"Não foi possível interpretar o resultado do validador: {text[:200]}"
+        # Fallback: invalid with error message
+        return False, f"Could not interpret the validator result: {text[:200]}"
 

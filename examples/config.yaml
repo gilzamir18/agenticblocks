@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# AgenticBlocks — Central configuration for all examples
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Edit this file to switch the LLM used by every example at once.
+# Any LiteLLM-compatible model string is accepted, for example:
+#
+#   Local (Ollama):
+#     model: ollama/mistral-nemo:latest
+#     model: ollama/granite4:1b
+#
+#   Google Gemini (requires GEMINI_API_KEY env var):
+#     model: gemini/gemini-2.0-flash
+#     model: gemini/gemini-2.5-pro-preview-03-25
+#
+#   OpenAI (requires OPENAI_API_KEY env var):
+#     model: openai/gpt-4o-mini
+#     model: openai/gpt-4o
+#
+#   Anthropic (requires ANTHROPIC_API_KEY env var):
+#     model: anthropic/claude-3-5-haiku-20241022
+#
+# You can also override the model for a single run via the env var:
+#   AGENTICBLOCKS_MODEL=gemini/gemini-2.0-flash python examples/07_validator_loop.py
+# ──────────────────────────────────────────────────────────────────────────────
+
+model: ollama/granite4:latest
+
+# Optional LiteLLM keyword arguments forwarded to every agent.
+# These can still be overridden on a per-example basis.
+litellm_kwargs:
+  temperature: 0.7
+  num_ctx: 8000

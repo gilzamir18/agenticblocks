@@ -4,14 +4,14 @@ from agenticblocks.core.block import Block, Input, Output
 
 class AgentBlock(Block[Input, Output]):
     """
-    Classe base para Agentes independentes do modelo cognitivo (LLM ou não-LLM).
-    Um Agente é caracterizado por possuir um ciclo (loop) de decisão próprio 
-    e um conjunto de "Componentes" ou "Ferramentas" (Sub-Blocos) acopláveis.
+    Base class for Agents that are independent of the cognitive model (LLM or non-LLM).
+    An Agent is characterized by having its own decision loop and a set of
+    attachable "Components" or "Tools" (Sub-Blocks).
     """
     tools: List[Block] = []
     
     async def run(self, input: Input) -> Output:
         """
-        Subclasses devem implementar o próprio Loop de pensamento ou heurística aqui.
+        Subclasses must implement their own thinking loop or heuristic here.
         """
-        raise NotImplementedError("Crie e injete o ciclo cognitivo do seu agente nesta etapa.")
+        raise NotImplementedError("Create and inject your agent's cognitive loop at this step.")

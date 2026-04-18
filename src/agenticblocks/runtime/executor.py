@@ -65,8 +65,8 @@ class WorkflowExecutor:
         if not nx.is_directed_acyclic_graph(collapsed):
             cycles = list(nx.simple_cycles(collapsed))
             raise ValueError(
-                f"Ciclos não declarados detectados no grafo: {cycles}. "
-                "Use graph.add_cycle() para declarar ciclos intencionais."
+                f"Undeclared cycles detected in the graph: {cycles}. "
+                "Use graph.add_cycle() to declare intentional cycles."
             )
         self.graph.validate_connections()
 
@@ -79,7 +79,7 @@ class WorkflowExecutor:
         while remaining:
             wave = [n for n in remaining if in_degree[n] == 0]
             if not wave:
-                raise RuntimeError("Dependências circulares detectadas.")
+                raise RuntimeError("Circular dependencies detected.")
             waves.append(wave)
             for node in wave:
                 remaining.remove(node)
@@ -119,7 +119,27 @@ class WorkflowExecutor:
             if issubclass(input_schema_class, dict):
                 typed_input = input_data
             else:
-                typed_input = input_schema_class(**input_data)
+                # Try direct construction first; fall back to text-field mapping
+                # when schemas don't align (e.g. AgentOutput.response → AgentInput.prompt).
+                # This mirrors the same fallback used in _execute_cycle and
+                # _map_output_to_input for cycle chains.
+                try:
+                    typed_input = input_schema_class(**input_data)
+                except Exception:
+                    text_field = self._get_text_field(input_schema_class)
+                    if text_field:
+                        text_val = (
+                            input_data.get("response")
+                            or input_data.get("result")
+                            or ""
+                        )
+                        data = {text_field: text_val}
+                        for fname in input_schema_class.model_fields:
+                            if fname != text_field and fname in input_data:
+                                data[fname] = input_data[fname]
+                        typed_input = input_schema_class(**data)
+                    else:
+                        raise
 
             output = await block.run(typed_input)
             result = NodeResult(
@@ -237,12 +257,12 @@ class WorkflowExecutor:
 
             # ── Augment prompt with feedback for next iteration ────────────
             if cycle.augment_fn is not None:
-                # Modo customizado: o chamador controla totalmente o próximo prompt.
+                # Custom mode: the caller fully controls the next prompt.
                 augmented = cycle.augment_fn(
                     original_prompt, iteration, producer_text, feedback
                 )
             else:
-                # Modo padrão (refinamento): injeta o feedback num template fixo.
+                # Default mode (refinement): inject feedback into a fixed template.
                 augmented = (
                     f"{original_prompt}\n\n"
                     f"--- Attempt {iteration} (rejected) ---\n"

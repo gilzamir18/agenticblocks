@@ -8,22 +8,22 @@ from pydantic import BaseModel
 @dataclass
 class CycleGroup:
     """
-    Descreve um subgrafo cíclico declarado explicitamente.
+    Describes an explicitly declared cyclic subgraph.
 
-    O executor roda os blocos do ciclo de forma iterativa até que
-    `condition_block` retorne `is_valid=True` ou `max_iterations` seja atingido.
+    The executor runs the cycle's blocks iteratively until
+    `condition_block` returns `is_valid=True` or `max_iterations` is reached.
 
-    Atributos:
-        name:             Identificador único do ciclo (usado como nó virtual no grafo).
-        members:          Nomes dos blocos que pertencem ao ciclo.
-        edges:            Arestas internas do ciclo [(from, to), ...].
-        condition_block:  Bloco cujo output controla a continuação (should have is_valid/feedback).
-        entry_block:      Bloco que recebe o prompt aumentado com o feedback a cada re-tentativa.
-        max_iterations:   Máximo de iterações antes de desistir.
-        prompt_field:     Campo do input do entry_block a ser aumentado com o feedback.
-        augment_fn:       Callable opcional para montar o prompt da próxima iteração.
-                          Assinatura: (original_prompt, iteration, producer_text, feedback) -> str.
-                          Quando None, usa o comportamento padrão de refinamento.
+    Attributes:
+        name:             Unique cycle identifier (used as a virtual node in the graph).
+        members:          Names of the blocks belonging to the cycle.
+        edges:            Internal cycle edges [(from, to), ...].
+        condition_block:  Block whose output controls continuation (should have is_valid/feedback).
+        entry_block:      Block that receives the prompt augmented with feedback on each retry.
+        max_iterations:   Maximum number of iterations before giving up.
+        prompt_field:     Field in the entry_block input to be augmented with feedback.
+        augment_fn:       Optional callable to build the next iteration's prompt.
+                          Signature: (original_prompt, iteration, producer_text, feedback) -> str.
+                          When None, uses the default refinement behaviour.
     """
     name: str
     members: list[str]
@@ -49,17 +49,17 @@ class WorkflowGraph:
     def add_block(self, block: Block) -> str:
         node_id = block.name
         if node_id in self.graph.nodes:
-            raise ValueError(f"Já existe um bloco com o nome '{node_id}'")
+            raise ValueError(f"A block named '{node_id}' already exists")
         self.graph.add_node(node_id, block=block)
         return node_id
 
     def add_sequence(self, *blocks: Block) -> list[str]:
         """
-        Registra blocos e os conecta linearmente em uma única chamada.
+        Registers blocks and connects them linearly in a single call.
 
             graph.add_sequence(A, B, C)
 
-        É equivalente a:
+        Is equivalent to:
 
             graph.add_block(A)
             graph.add_block(B)
@@ -67,11 +67,11 @@ class WorkflowGraph:
             graph.connect("A", "B")
             graph.connect("B", "C")
 
-        Retorna a lista de node_ids na ordem fornecida.
+        Returns the list of node_ids in the order provided.
         """
         if len(blocks) < 2:
             raise ValueError(
-                "add_sequence() requer pelo menos 2 blocos para formar uma sequência."
+                "add_sequence() requires at least 2 blocks to form a sequence."
             )
         names: list[str] = []
         for block in blocks:
@@ -96,39 +96,39 @@ class WorkflowGraph:
         augment_fn: Optional[Callable[[str, int, str, str], str]] = None,
     ) -> str:
         """
-        Declara um ciclo limitado no grafo.
+        Declares a bounded cycle in the graph.
 
-        Todos os blocos referenciados já devem ter sido adicionados
-        via add_block(). O entry_block é detectado automaticamente como o nó
-        que não possui predecessores dentro do ciclo.
+        All referenced blocks must have been added via add_block() beforehand.
+        The entry_block is automatically detected as the member with no
+        incoming edges within the cycle.
 
-        Exatamente um dos parâmetros `edges` ou `sequence` deve ser fornecido:
+        Exactly one of `edges` or `sequence` must be provided:
 
-        - ``edges``: lista explícita de arestas ``(from, to)`` para topologias
-          arbitrárias (fanout, merge, etc.).
-        - ``sequence``: atalho para cadeias lineares. Passando
-          ``sequence=["A", "B", "C", "D"]`` equivale a
+        - ``edges``: explicit list of ``(from, to)`` edges for arbitrary
+          topologies (fanout, merge, etc.).
+        - ``sequence``: shortcut for linear chains. Passing
+          ``sequence=["A", "B", "C", "D"]`` is equivalent to
           ``edges=[("A","B"), ("B","C"), ("C","D")]``.
 
-        Retorna o nome do ciclo, que pode ser usado em connect() como nó virtual.
+        Returns the cycle name, which can be used in connect() as a virtual node.
         """
         if name in self._cycles:
-            raise ValueError(f"Ciclo '{name}' já existe.")
+            raise ValueError(f"Cycle '{name}' already exists.")
 
         # Resolve edges from sequence shorthand or validate explicit edges
         if edges is not None and sequence is not None:
             raise ValueError(
-                "Forneça apenas 'edges' ou 'sequence', não os dois ao mesmo tempo."
+                "Provide only 'edges' or 'sequence', not both at the same time."
             )
         if sequence is not None:
             if len(sequence) < 2:
                 raise ValueError(
-                    "'sequence' precisa ter pelo menos 2 blocos para formar uma aresta."
+                    "'sequence' must have at least 2 blocks to form an edge."
                 )
             edges = list(zip(sequence, sequence[1:]))
         if not edges:
             raise ValueError(
-                "Forneça 'edges' ou 'sequence' com pelo menos uma aresta."
+                "Provide 'edges' or 'sequence' with at least one edge."
             )
 
         # Collect member block names from edges
@@ -136,16 +136,16 @@ class WorkflowGraph:
         for m in members:
             if m not in self.graph.nodes:
                 raise ValueError(
-                    f"Bloco '{m}' não encontrado. Chame add_block() antes de add_cycle()."
+                    f"Block '{m}' not found. Call add_block() before add_cycle()."
                 )
             if m in self._node_to_cycle:
                 raise ValueError(
-                    f"Bloco '{m}' já pertence ao ciclo '{self._node_to_cycle[m]}'."
+                    f"Block '{m}' already belongs to cycle '{self._node_to_cycle[m]}'."
                 )
 
         if condition_block not in members:
             raise ValueError(
-                f"condition_block '{condition_block}' deve fazer parte das arestas do ciclo."
+                f"condition_block '{condition_block}' must be part of the cycle's edges."
             )
 
         # Auto-detect entry_block: the member with no incoming edge within the cycle
@@ -154,8 +154,8 @@ class WorkflowGraph:
         entries = sources - targets
         if not entries:
             raise ValueError(
-                "Não foi possível determinar o entry_block automaticamente: "
-                "todos os membros possuem predecessores internos."
+                "Could not automatically determine entry_block: "
+                "all members have internal predecessors."
             )
         entry_block = entries.pop()
 
@@ -185,17 +185,17 @@ class WorkflowGraph:
 
     def connect(self, from_id: str, to_id: str) -> None:
         """
-        Conecta dois nós ou um nó e um ciclo declarado.
-        Aceita nomes de ciclos como from_id ou to_id (nós virtuais).
+        Connects two nodes or a node and a declared cycle.
+        Accepts cycle names as from_id or to_id (virtual nodes).
         """
         from_is_cycle = from_id in self._cycles
         to_is_cycle   = to_id in self._cycles
 
         if from_is_cycle or to_is_cycle:
             if not from_is_cycle and from_id not in self.graph.nodes:
-                raise ValueError(f"Bloco '{from_id}' não encontrado no grafo.")
+                raise ValueError(f"Block '{from_id}' not found in the graph.")
             if not to_is_cycle and to_id not in self.graph.nodes:
-                raise ValueError(f"Bloco '{to_id}' não encontrado no grafo.")
+                raise ValueError(f"Block '{to_id}' not found in the graph.")
 
             # Resolve the actual node to connect in the real graph:
             # cycle output flows from condition_block; cycle input enters at entry_block.
@@ -205,7 +205,7 @@ class WorkflowGraph:
             self.graph.add_edge(actual_from, actual_to, _cross_cycle=True)
         else:
             if from_id not in self.graph.nodes or to_id not in self.graph.nodes:
-                raise ValueError("Ambos os blocos devem existir no grafo.")
+                raise ValueError("Both blocks must exist in the graph.")
             self.graph.add_edge(from_id, to_id)
 
     # ------------------------------------------------------------------
@@ -214,10 +214,10 @@ class WorkflowGraph:
 
     def collapsed_graph(self) -> nx.DiGraph:
         """
-        Retorna uma visão DAG do grafo onde cada CycleGroup é colapsado
-        em um único nó virtual. Usado por:
-          - _validate()     (checar que não há ciclos não declarados)
-          - _build_waves()  (ordenação topológica)
+        Returns a DAG view of the graph where each CycleGroup is collapsed
+        into a single virtual node. Used by:
+          - _validate()     (check that there are no undeclared cycles)
+          - _build_waves()  (topological ordering)
         """
         g = nx.DiGraph()
 

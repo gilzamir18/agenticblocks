@@ -1,20 +1,27 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from config import get_model
+
 from agenticblocks import as_tool
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
 
-# async def — chamado diretamente com await
+# async def — called directly with await
 @as_tool
-async def buscar_clima(cidade: str) -> str:
-    """Retorna o clima atual de uma cidade."""
-    return f"Ensolarado em {cidade}"
+async def get_weather(city: str) -> str:
+    """Returns the current weather for a city."""
+    return f"Sunny in {city}"
 
-# def síncrono — roda em thread pool via asyncio.to_thread
-@as_tool(name="hora_atual", description="Retorna a hora atual do sistema.")
-def hora_atual() -> str:
+# synchronous def — runs in a thread pool via asyncio.to_thread
+@as_tool(name="current_time", description="Returns the current system time.")
+def current_time() -> str:
     import datetime
     return datetime.datetime.now().strftime("%H:%M:%S")
 
-# Uso idêntico ao de qualquer outro Block
-agente = LLMAgentBlock(
-    name="assistente",
-    tools=[buscar_clima, hora_atual]
+# Usage is identical to any other Block
+agent = LLMAgentBlock(
+    name="assistant",
+    model=get_model(),
+    tools=[get_weather, current_time],
 )
