@@ -27,11 +27,11 @@ class NodeResult:
 @dataclass
 class CycleResult:
     """
-    Resultado de um CycleGroup após execução completa.
+    Result of a CycleGroup after full execution.
 
-    Armazenado no ExecutionContext sob o nome do ciclo.
-    O campo `output` contém o último output do bloco produtor
-    (entry_block ou o último bloco não-condition do ciclo).
+    Stored in the ExecutionContext under the cycle name.
+    The `output` field holds the last output of the producer block
+    (entry_block or the last non-condition block in the cycle).
     """
     cycle_name:  str
     iterations:  int

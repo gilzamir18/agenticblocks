@@ -1,6 +1,8 @@
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import get_model
 
 import json
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
@@ -27,17 +29,17 @@ class EmailCheckerAgenticBlock(Block[EmailCheckerInput, EmailCheckerOutput]):
 
     async def run(self, input: EmailCheckerInput) -> EmailCheckerOutput:
         prompt = f"""
-        você é o Orquestrador Principal do fluxo de verificação de email.
-        Aqui estão os detalhes do email:
-            - De: {input.from_content}
-            - Para: {input.to_content}
-            - Assunto: {input.subject_content}
-            - Corpo Oculto: {input.email_content}
-        Classifique o tipo de conteúdo ("spam", "suporte", "vendas") e forneça
-        quais ações devem ser efetuadas.
+        You are the Main Orchestrator of the email verification flow.
+        Here are the email details:
+            - From: {input.from_content}
+            - To: {input.to_content}
+            - Subject: {input.subject_content}
+            - Body: {input.email_content}
+        Classify the content type ("spam", "support", "sales") and specify
+        which actions should be taken.
 
-        Sua resposta FINAL deve ser extritamente um JSON
-        no seguinte formato:
+        Your FINAL response must be strictly a JSON object
+        in the following format:
         {{
             "content_type": "",
             "actions": ""
@@ -49,9 +51,9 @@ class EmailCheckerAgenticBlock(Block[EmailCheckerInput, EmailCheckerOutput]):
         try:
             parsed_result = json.loads(agent_output.response.strip("```json\n").strip("```"))
         except json.JSONDecodeError:
-            parsed_result = {"content_type": "desconhecido", "actions": agent_output.response}
-            
-        # Modelos menores (como Granite) podem retornar listas de ações de forma inesperada.
+            parsed_result = {"content_type": "unknown", "actions": agent_output.response}
+
+        # Smaller models (e.g. Granite) may return actions as a list unexpectedly.
         actions_raw = parsed_result.get("actions", "")
         if isinstance(actions_raw, list):
             actions_str = " | ".join(str(x) for x in actions_raw)
@@ -59,8 +61,8 @@ class EmailCheckerAgenticBlock(Block[EmailCheckerInput, EmailCheckerOutput]):
             actions_str = str(actions_raw)
 
         return EmailCheckerOutput(
-            content_type = str(parsed_result.get("content_type", "desconhecido")),
-            actions = actions_str
+            content_type=str(parsed_result.get("content_type", "unknown")),
+            actions=actions_str,
         )
     
 
@@ -68,42 +70,41 @@ async def main():
 
     graph = WorkflowGraph()
 
-    llmmodelagent = LLMAgentBlock(
+    llm_agent = LLMAgentBlock(
         name="LLM Model Agent",
-        model="ollama/granite4:1b",
-        system_prompt="Você é um assistente de email, classifique o tipo de conteúdo e as ações necessárias."
+        model=get_model(),
+        system_prompt="You are an email assistant. Classify the content type and specify the necessary actions."
     )
 
-    block_email = EmailCheckerAgenticBlock(llmagent=llmmodelagent)
+    block_email = EmailCheckerAgenticBlock(llmagent=llm_agent)
     graph.add_block(block_email)
 
     executor = WorkflowExecutor(graph)
 
-    print("Iniciando Workflow...\n")
-    
-    if llmmodelagent.model.startswith("gemini") and not os.getenv("GEMINI_API_KEY"):
-         print("⚠️ Lembrete: Defina GEMINI_API_KEY para a resposta final fluir do LiteLLM.")
-    elif llmmodelagent.model.startswith("openai") and not os.getenv("OPENAI_API_KEY"):
-         print("⚠️ Lembrete: Defina OPENAI_API_KEY para a resposta final fluir do LiteLLM.")
-    try:
-        # 3. Disparamos o Loop de Raciocínio
-        print("👤 Simulando o recebimento de um email...")
-        email_data = {
-            "from_content": "cliente@email.com",
-            "to_content": "suporte@empresa.com",
-            "subject_content": "Problema no acesso à conta",
-            "email_content": "Não consigo entrar no sistema há horas. Me ajude rápido!"
-        }
-        
-        ctx = await executor.run(initial_input=email_data)
-        
-        output = ctx.get_output("email_checker")
-        print("\n[🎯 Resposta Final do Agente]:")
-        print(f"Tipo: {output.content_type}\nAções: {output.actions}")
+    print("Starting workflow...\n")
 
+    if llm_agent.model.startswith("gemini") and not os.getenv("GEMINI_API_KEY"):
+        print("⚠️  Reminder: set GEMINI_API_KEY so LiteLLM can reach the Gemini API.")
+    elif llm_agent.model.startswith("openai") and not os.getenv("OPENAI_API_KEY"):
+        print("⚠️  Reminder: set OPENAI_API_KEY so LiteLLM can reach the OpenAI API.")
+    try:
+        # Trigger the reasoning loop
+        print("👤 Simulating the reception of an email...")
+        email_data = {
+            "from_content": "client@email.com",
+            "to_content": "support@company.com",
+            "subject_content": "Problem accessing my account",
+            "email_content": "I haven't been able to log into the system for hours. Please help me quickly!"
+        }
+
+        ctx = await executor.run(initial_input=email_data)
+
+        output = ctx.get_output("email_checker")
+        print("\n[🎯 Agent Final Response]:")
+        print(f"Type: {output.content_type}\nActions: {output.actions}")
 
     except Exception as e:
-        print(f"\n[🛑 Falha no provedor LLM]: {e}")
+        print(f"\n[🛑 LLM provider failure]: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

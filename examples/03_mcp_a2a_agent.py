@@ -1,15 +1,17 @@
 import asyncio
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from config import get_model
 
 from pydantic import BaseModel
 from agenticblocks.core.block import Block
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
-import sys
-import os
 
-# 1. Definindo o Agente Pesquisador (Sub-Agente a ser chamado por A2A)
+# 1. Researcher agent (sub-agent called via A2A)
 class ResearcherInput(BaseModel):
     query: str
 
@@ -18,52 +20,47 @@ class ResearcherOutput(BaseModel):
 
 class ResearcherBlock(Block[ResearcherInput, ResearcherOutput]):
     name: str = "researcher_agent"
-    description: str = "Pesquisa informações em arquivo ou banco de dados dado uma query."
-    
+    description: str = "Searches for information in a file or database for a given query."
+
     async def run(self, input: ResearcherInput) -> ResearcherOutput:
-        print(f"\n[A2A Call] 🕵️ Pesquisador invocado buscando por: '{input.query}'")
-        await asyncio.sleep(0.5) # Simula o processamento pesado ou o MCP call  
-        return ResearcherOutput(findings=f"Encontrei dados sobre '{input.query}': Sucesso Absoluto.")
+        print(f"\n[A2A Call] 🕵️ Researcher invoked searching for: '{input.query}'")
+        await asyncio.sleep(0.5)  # Simulates heavy processing or an MCP call
+        return ResearcherOutput(findings=f"Found data on '{input.query}': Absolute Success.")
 
 
-# 2. Configurando o Grafo e o Diretor (Agent MCP)
+# 2. Graph and Director agent setup
 async def main():
-    # Detectamos o caminho absoluto correto para invocar o servidor Python como subprocesso
-    python_exe = sys.executable
-    server_path = os.path.join(os.path.dirname(__file__), "mcp_server_estoque.py")
-    llm_model = "ollama/granite4:1b" #if don't work change to "gemini/gemini-3-flash-preview"
+    llm_model = get_model()
 
     graph = WorkflowGraph()
-    
-    # Instanciamos nosso bloco A2A subordinado
+
+    # Instantiate the A2A subordinate block
     researcher = ResearcherBlock()
-    
-    # Instanciamos o Agente Principal (Delegador)
+
+    # Instantiate the main Director agent (delegator)
     director_agent = LLMAgentBlock(
         name="director_agent",
         model=llm_model,
-        system_prompt="Você é o Diretor. Use a ferramenta researcher_agent para buscar dados exatos sempre antes de responder.",
-        tools=[researcher], # Aqui acontece a mágica (A2A Bridge e Pydantic Schema Automático)!
-        max_iterations=5 # Evita loops com LLMs locais
+        system_prompt="You are the Director. Always use the researcher_agent tool to fetch exact data before responding.",
+        tools=[researcher],  # A2A Bridge + automatic Pydantic schema
+        max_iterations=5,    # Prevents infinite loops with local LLMs
     )
-    
+
     graph.add_block(director_agent)
     executor = WorkflowExecutor(graph)
-    llm_model = "ollama/granite4:1b"
 
-    if llm_model.startswith("gemini"):
-        if not os.getenv("GEMINI_API_KEY"):
-            print("⚠️ Lembrete: Defina GEMINI_API_KEY para a resposta final fluir do LiteLLM.")
-    
+    if llm_model.startswith("gemini") and not os.getenv("GEMINI_API_KEY"):
+        print("⚠️  Reminder: set GEMINI_API_KEY so LiteLLM can reach the Gemini API.")
+
     try:
-        ctx = await executor.run(initial_input={"prompt": "Por favor investigue a operação de hoje."})
+        ctx = await executor.run(initial_input={"prompt": "Please investigate today's operation."})
         output = ctx.get_output("director_agent")
-        
-        print("\n[Resposta Final do LLM Diretor]:")
+
+        print("\n[Director LLM — Final Response]:")
         print(output.response)
-        print(f"- Tool Calls transparentes feitas (A2A): {output.tool_calls_made}")
+        print(f"- Transparent A2A tool calls made: {output.tool_calls_made}")
     except Exception as e:
-        print(f"\n[Fim Antecipado (Erro API)]: {e}")
+        print(f"\n[Early termination (API error)]: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,17 +1,17 @@
 """
-function_block.py — Adaptador que permite usar funções simples como Blocos.
+function_block.py — Adapter that allows using plain functions as Blocks.
 
-Uso:
+Usage:
     @as_tool
-    async def buscar_clima(cidade: str) -> str:
-        '''Retorna o clima atual de uma cidade.'''
-        return f"Ensolarado em {cidade}"
+    async def fetch_weather(city: str) -> str:
+        '''Returns the current weather for a city.'''
+        return f"Sunny in {city}"
 
-    @as_tool(name="clima", description="Consulta o clima atual.")
-    def buscar_clima_sync(cidade: str) -> str:
-        return f"Ensolarado em {cidade}"
+    @as_tool(name="weather", description="Queries the current weather.")
+    def fetch_weather_sync(city: str) -> str:
+        return f"Sunny in {city}"
 
-    agente = LLMAgentBlock(name="agente", tools=[buscar_clima, buscar_clima_sync])
+    agent = LLMAgentBlock(name="agent", tools=[fetch_weather, fetch_weather_sync])
 """
 
 import asyncio
@@ -24,14 +24,14 @@ from agenticblocks.core.block import Block
 
 
 class FunctionOutput(BaseModel):
-    """Output padrão para funções que retornam valores primitivos ou dicts."""
+    """Default output for functions that return primitive values or dicts."""
 
     model_config = {"arbitrary_types_allowed": True}
     result: Any
 
 
 def _build_input_model(func: Callable) -> Type[BaseModel]:
-    """Constrói um modelo Pydantic dinamicamente a partir dos parâmetros da função."""
+    """Dynamically builds a Pydantic model from the function's parameters."""
     sig = inspect.signature(func)
     try:
         hints = get_type_hints(func)
@@ -54,21 +54,21 @@ def _build_input_model(func: Callable) -> Type[BaseModel]:
 
 class FunctionBlock(Block):
     """
-    Adapta uma função Python (sync ou async) para a interface Block.
+    Adapts a Python function (sync or async) to the Block interface.
 
-    Suporta:
-    - async def: chamada direta com await.
-    - def: execução em thread pool via asyncio.to_thread (não bloqueia o event loop).
+    Supports:
+    - async def: called directly with await.
+    - def: executed in a thread pool via asyncio.to_thread (does not block the event loop).
 
-    O retorno da função é normalizado:
-    - BaseModel → retornado diretamente.
-    - dict     → serializado como FunctionOutput(result=<dict>).
-    - qualquer outro → envolvido em FunctionOutput(result=<valor>).
+    The function return value is normalised:
+    - BaseModel → returned directly.
+    - dict     → serialised as FunctionOutput(result=<dict>).
+    - any other → wrapped in FunctionOutput(result=<value>).
     """
 
     model_config = {"arbitrary_types_allowed": True}
 
-    # Atributos privados — não expostos ao schema Pydantic nem serializados.
+    # Private attributes — not exposed in Pydantic schema or serialised.
     _func: Callable = PrivateAttr()
     _input_model: Type[BaseModel] = PrivateAttr()
 
@@ -85,9 +85,9 @@ class FunctionBlock(Block):
         self._func = func
         self._input_model = _build_input_model(func)
 
-    # Sobrescrita de instância: retorna o modelo gerado especificamente para esta função.
-    # Como input_schema é classmethod em Block, chamamos via instância — Python resolve
-    # o método de instância primeiro quando disponível no __dict__ da classe concreta.
+    # Instance override: returns the model generated specifically for this function.
+    # Since input_schema is a classmethod on Block, we call it via the instance —
+    # Python resolves the instance method first when available in the concrete class __dict__.
     def input_schema(self) -> Type[BaseModel]:  # type: ignore[override]
         return self._input_model
 
@@ -97,10 +97,10 @@ class FunctionBlock(Block):
         if asyncio.iscoroutinefunction(self._func):
             raw = await self._func(**kwargs)
         else:
-            # Funções síncronas rodam em thread pool para não bloquear o event loop.
+            # Synchronous functions run in a thread pool so as not to block the event loop.
             raw = await asyncio.to_thread(self._func, **kwargs)
 
-        # Normalização do retorno
+        # Normalise return value
         if isinstance(raw, BaseModel):
             return raw
         return FunctionOutput(result=raw)
@@ -117,23 +117,23 @@ def as_tool(
     description: Optional[str] = None,
 ) -> Any:
     """
-    Converte uma função (sync ou async) em um FunctionBlock pronto para ser
-    usado como ferramenta em LLMAgentBlock.tools — sem alterar a interface Block.
+    Converts a function (sync or async) into a FunctionBlock ready to be
+    used as a tool in LLMAgentBlock.tools — without changing the Block interface.
 
-    Pode ser usado de duas formas:
+    Can be used in two ways:
 
         @as_tool
-        async def minha_ferramenta(param: str) -> str: ...
+        async def my_tool(param: str) -> str: ...
 
-        @as_tool(name="nome", description="Descrição.")
-        def minha_ferramenta(param: str) -> str: ...
+        @as_tool(name="name", description="Description.")
+        def my_tool(param: str) -> str: ...
     """
     def _wrap(f: Callable) -> FunctionBlock:
         return FunctionBlock(func=f, name=name, description=description)
 
     if func is not None:
-        # Chamado sem parênteses: @as_tool
+        # Called without parentheses: @as_tool
         return _wrap(func)
 
-    # Chamado com parênteses: @as_tool(...)
+    # Called with parentheses: @as_tool(...)
     return _wrap

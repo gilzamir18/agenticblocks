@@ -1,23 +1,25 @@
 """
-07_validator_loop.py — Ciclo produtor->validador expresso nativamente no grafo.
+07_validator_loop.py — Producer -> Validator cycle expressed natively in the graph.
 
-O WorkflowExecutor detecta o CycleGroup e executa o loop com feedback
-automatico -- sem nenhum bloco orquestrador especial.
+The WorkflowExecutor detects the CycleGroup and runs the feedback loop
+automatically — no special orchestrator block required.
 
-Produtor  : LLMAgentBlock  ->  gera um email formal
-Validador : @as_tool        ->  funcao Python que verifica estrutura e formalidade
-Resultado : lido diretamente do ExecutionContext apos execucao
+Producer  : LLMAgentBlock  ->  generates a formal email
+Validator : @as_tool        ->  pure Python function that checks structure and formality
+Result    : read directly from the ExecutionContext after execution
 """
 
 import asyncio
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from config import get_model
 
 from agenticblocks import as_tool
 from agenticblocks.blocks.llm.agent import LLMAgentBlock
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
-
-MODEL = os.getenv("AGENTICBLOCKS_MODEL", "ollama/granite4:1b")
 
 
 # -- Validador: funcao pura, reutilizavel em qualquer grafo ------------------
@@ -58,12 +60,12 @@ def validate_email(content: str) -> dict:
     return {"is_valid": True, "feedback": ""}
 
 
-# -- Construcao do grafo ------------------------------------------------------
+# -- Graph construction -------------------------------------------------------
 
 async def main():
     writer = LLMAgentBlock(
         name="writer",
-        model=MODEL,
+        model=get_model(),
         system_prompt=(
             "You are a professional corporate writer. "
             "Write formal, well-structured emails in Brazilian Portuguese."
@@ -75,8 +77,8 @@ async def main():
     graph.add_block(writer)
     graph.add_block(validate_email)  # FunctionBlock from @as_tool
 
-    # Declara o ciclo: writer -> validate_email
-    # sequence=[] é o atalho para cadeias lineares (equivale a edges=[("writer", "validate_email")])
+    # Declare the cycle: writer -> validate_email
+    # sequence=[] is the shortcut for linear chains (equivalent to edges=[("writer", "validate_email")])
     graph.add_cycle(
         name="refine_email",
         sequence=["writer", "validate_email"],
@@ -97,8 +99,8 @@ async def main():
         )
     })
 
-    # O resultado do ciclo esta disponivel diretamente no contexto --
-    # nenhum bloco extra necessario.
+    # The cycle result is available directly in the context —
+    # no extra orchestrator block needed.
     cr = ctx.cycle_results.get("refine_email")
     if cr:
         print(f"\n[Done] Iterations: {cr.iterations} | Validated: {cr.validated}")
