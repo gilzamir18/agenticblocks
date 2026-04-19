@@ -93,7 +93,12 @@ agent = LLMAgentBlock(
 - **A2A bridging**: sub-agents are called as tools transparently — the parent LLM receives only the text response, not raw JSON metadata.
 - **Connection Pooling**: Pass any `litellm_kwargs` (HTTP clients, timeouts, etc.) to optimize API performance.
 
-#### 6. Native Feedback Cycles
+#### 6. Advanced Flow Control & Heuristics
+
+- **PromptBuilderBlock**: Merges outputs from multiple predecessors into a single formatted `AgentInput` prompt using Python format-strings. Useful for "diamond" graph patterns (e.g., feeding both the original topic and a search report to a final summarizer).
+- **HeuristicLLMAgentBlock**: A specialized agent for models with weak native tool support (like smaller local models). It heuristically parses hallucinated JSON tool calls out of plain text responses and executes them transparently.
+
+#### 7. Native Feedback Cycles
 
 Declare validator loops directly in the graph without any wrapper block:
 
@@ -136,7 +141,7 @@ It is recommended to install [Ollama](https://ollama.com/) with the model `grani
 | `06_functionastool.py` | `@as_tool` decorator for plain functions |
 | `07_validator_loop.py` | Native graph cycle with producer + validator feedback loop |
 
-> **Note:** Quantized or small models like `granite` may produce lower-quality reasoning. Large commercial models yield excellent results but require an API key environment variable. Free-tier rate limits may cause occasional errors; paid tiers offer stable operation.
+> **Note:** Quantized or small models like `granite` may produce lower-quality reasoning and struggle with native tool calling. For reliable local tool usage, use `llama3.1` or `mistral-nemo`. If using `granite4`, prefer the `HeuristicLLMAgentBlock` to capture hallucinated JSON tool calls. Large commercial models (OpenAI, Gemini, Anthropic) yield excellent results but require an API key.
 
 ---
 
@@ -183,7 +188,12 @@ O `LLMAgentBlock` abstrai e converte sub-blocos em ferramentas nativas (A2A). De
 - **A2A transparente**: Agentes subordinados são chamados como ferramentas; o agente pai recebe apenas o texto da resposta, sem metadados JSON brutos.
 - **Connection Pooling**: Aceite sessões HTTP e parâmetros estendidos via `litellm_kwargs`.
 
-#### 6. Ciclos de Feedback Nativos
+#### 6. Controle de Fluxo Avançado & Heurísticas
+
+- **PromptBuilderBlock**: Mescla saídas de múltiplos predecessores em um único prompt `AgentInput` formatado. Ideal para padrões de grafo em "diamante".
+- **HeuristicLLMAgentBlock**: Agente especializado para modelos com suporte fraco a chamadas de ferramentas (como modelos locais pequenos). Ele extrai heuristicamente chamadas de ferramenta em formato JSON do texto plano e as executa de forma transparente.
+
+#### 7. Ciclos de Feedback Nativos
 
 Declare um loop validador diretamente no grafo — sem bloco orquestrador especial:
 
@@ -225,4 +235,4 @@ Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b`
 | `06_functionastool.py` | Decorator `@as_tool` para funções simples |
 | `07_validator_loop.py` | Ciclo nativo no grafo: produtor + validador com feedback |
 
-> **Atenção:** Modelos quantizados ou menores podem produzir resultados abaixo do esperado. Modelos comerciais grandes geram excelentes resultados, mas exigem configuração de API KEY e podem sofrer com limites da camada gratuita.
+> **Atenção:** Modelos quantizados ou menores podem produzir resultados abaixo do esperado e ter dificuldade com chamadas nativas de ferramentas. Para uso local confiável de ferramentas, prefira `llama3.1` ou `mistral-nemo`. Caso use `granite4`, utilize o `HeuristicLLMAgentBlock`. Modelos comerciais grandes geram excelentes resultados, mas exigem configuração de API KEY.
