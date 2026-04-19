@@ -23,7 +23,26 @@ class HeuristicLLMAgentBlock(LLMAgentBlock):
         if match:
             try:
                 data = json.loads(match.group())
-                # Check if it resembles the expected tool schema format
+                
+                # Heuristic 1: Nested blocks format (e.g. hallucinated by Mistral Nemo)
+                if isinstance(data, dict) and "blocks" in data and isinstance(data["blocks"], list) and len(data["blocks"]) > 0:
+                    block = data["blocks"][0]
+                    if isinstance(block, dict):
+                        # Case A: Model is trying to return the final result inside a hallucinated tool block
+                        if block.get("type") == "return" and "function" in block:
+                            func_data = block["function"]
+                            args = func_data.get("arguments", {})
+                            if isinstance(args, dict) and "result" in args:
+                                # Extract the result as the final text content
+                                message.content = str(args["result"])
+                                return message
+                        
+                        # Case B: Model is trying to call a tool inside a block
+                        elif block.get("type") == "function" or "function" in block:
+                            func_data = block.get("function", block)
+                            data = func_data # Fallthrough to Heuristic 2
+
+                # Heuristic 2: Direct tool schema format
                 if isinstance(data, dict) and "name" in data and ("parameters" in data or "arguments" in data):
                     tool_name = data["name"]
                     # Validate that it actually matches one of our available tools
