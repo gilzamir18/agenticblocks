@@ -16,6 +16,7 @@ A library to build agent workflows like **Lego blocks**. Each step in your agent
 - **Smart Parallelism (Waves)**: The asyncio engine fires simultaneous tasks (waves) whenever dependencies are resolved, maximizing API speed.
 - **Native Cycles**: Declare bounded feedback loops directly in the graph (`add_cycle()`). The executor handles iteration, feedback propagation, and exit conditions automatically.
 - **Functions as Tools**: Any plain Python function (sync or async) becomes a block with `@as_tool` — no class boilerplate required.
+- **Focus on local open-source models**: small models run well with this library, as we provide ready-made blocks that handle their limitations, such as HeuristicLLMAgentBlock, which heuristically extracts tool calls in JSON format from plain text and executes them transparently. See more in [docs/heuristicagent.md](docs/heuristicagent.md).
 
 ### Getting Started
 
@@ -155,6 +156,7 @@ Uma biblioteca para construir fluxos de agentes no estilo **Lego**. Cada passo d
 - **Paralelismo Inteligente (Ondas)**: O motor dispara tarefas simultâneas sempre que as dependências de um bloco são resolvidas.
 - **Ciclos Nativos**: Declare loops de feedback diretamente no grafo com `add_cycle()`. O executor gerencia iteração, propagação de feedback e condição de saída automaticamente.
 - **Funções como Ferramentas**: Qualquer função Python (síncrona ou async) vira um bloco com `@as_tool` — sem boilerplate de classe.
+- **Foco em modelos locais open-source**: modelos pequenos rodam bem com esta biblioteca, pois provemos blocos prontos que lidam com suas limitações, como HeuristicLLMAgentBlock, que extrai heuristicamente chamadas de ferramenta em formato JSON do texto plano e as executa de forma transparente. Veja mais em [docs/heuristicagent.md](docs/heuristicagent.md).
 
 ### Primeiros Passos
 
