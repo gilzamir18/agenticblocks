@@ -93,6 +93,7 @@ agent = LLMAgentBlock(
 - **Bounded tool loop**: `max_tool_calls` prevents runaway loops.
 - **A2A bridging**: sub-agents are called as tools transparently — the parent LLM receives only the text response, not raw JSON metadata.
 - **Connection Pooling**: Pass any `litellm_kwargs` (HTTP clients, timeouts, etc.) to optimize API performance.
+- **Iteration Hooks**: Use the `on_iteration` parameter to inject callbacks that execute at the beginning of each loop iteration. These callbacks receive the current iteration number and the list of messages, allowing for real-time monitoring, logging, or dynamic prompt adjustments during the agent's execution.
 
 #### 6. Advanced Flow Control & Heuristics
 
@@ -158,6 +159,8 @@ Uma biblioteca para construir fluxos de agentes no estilo **Lego**. Cada passo d
 - **Funções como Ferramentas**: Qualquer função Python (síncrona ou async) vira um bloco com `@as_tool` — sem boilerplate de classe.
 - **Foco em modelos locais open-source**: modelos pequenos rodam bem com esta biblioteca, pois provemos blocos prontos que lidam com suas limitações, como HeuristicLLMAgentBlock, que extrai heuristicamente chamadas de ferramenta em formato JSON do texto plano e as executa de forma transparente. Veja mais em [docs/heuristicagent.md](docs/heuristicagent.md).
 
+
+
 ### Primeiros Passos
 
 Instale o módulo de forma local editável:
@@ -194,6 +197,7 @@ O `LLMAgentBlock` abstrai e converte sub-blocos em ferramentas nativas (A2A). De
 
 - **PromptBuilderBlock**: Mescla saídas de múltiplos predecessores em um único prompt `AgentInput` formatado. Ideal para padrões de grafo em "diamante".
 - **HeuristicLLMAgentBlock**: Agente especializado para modelos com suporte fraco a chamadas de ferramentas (como modelos locais pequenos). Ele extrai heuristicamente chamadas de ferramenta em formato JSON do texto plano e as executa de forma transparente.
+- **Callbacks de Iteração (`on_iteration`)**: Use o parâmetro `on_iteration` para injetar funções de callback que serão executadas no início de cada iteração do loop do agente. Isso permite monitoramento em tempo real, logging ou ajustes dinâmicos no prompt durante a execução do agente.
 
 #### 7. Ciclos de Feedback Nativos
 
