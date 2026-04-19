@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AgenticBlocks.IO"
-version = "0.8.7"
+version = "0.8.8"
 description = "A building block library for composed agent workflows"
 readme = "README.md"
 requires-python = ">=3.9"
