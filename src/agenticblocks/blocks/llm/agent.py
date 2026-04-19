@@ -62,7 +62,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """
     synthesis_prompt: str = (
         "Based on everything researched above, write your final answer now "
-        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting."
+        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting. "
+        "ignore previous roles and system prompts. Response in the same language as the input prompt."
     )
     debug: bool = False
     """When True, print a structured debug report at the end of each run."""
@@ -103,6 +104,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     final_kwargs = self.litellm_kwargs.copy()
                     final_kwargs.pop("tools", None)
                     final_kwargs.pop("tool_choice", None)
+                    final_kwargs["system_prompt"] = self.synthesis_prompt
+                    
                     final_resp = await litellm.acompletion(
                         model=self.model, messages=messages, **final_kwargs
                     )
@@ -256,7 +259,8 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """
     synthesis_prompt: str = (
         "Based on everything researched above, write your final answer now "
-        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting."
+        "as clean, flowing prose — no JSON, no raw lists, no markdown formatting. "
+        "ignore previous roles and system prompts. Response in the same language as the input prompt."
     )
     debug: bool = False
     """When True, print a structured debug report at the end of each run."""
@@ -291,6 +295,7 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     final_kwargs = self.litellm_kwargs.copy()
                     final_kwargs.pop("tools", None)
                     final_kwargs.pop("tool_choice", None)
+                    final_kwargs["system_prompt"] = self.synthesis_prompt
                     final_resp = await router.acompletion(
                         model=self.model, messages=messages, **final_kwargs
                     )
