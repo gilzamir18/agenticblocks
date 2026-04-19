@@ -3,5 +3,6 @@ __version__ = "0.1.0"
 
 from agenticblocks.core.function_block import FunctionBlock, as_tool
 from agenticblocks.blocks.flow.prompt_builder import PromptBuilderBlock
+from agenticblocks.blocks.llm.heuristic_agent import HeuristicLLMAgentBlock
 
-__all__ = ["FunctionBlock", "as_tool", "PromptBuilderBlock"]
+__all__ = ["FunctionBlock", "as_tool", "PromptBuilderBlock", "HeuristicLLMAgentBlock"]

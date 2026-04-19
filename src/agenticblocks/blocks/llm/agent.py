@@ -70,6 +70,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
     model_config = {"arbitrary_types_allowed": True}
 
+    def _parse_message(self, message: Any) -> Any:
+        """
+        Hook for subclasses to manipulate the LiteLLM message before it is processed.
+        Useful for intercepting hallucinated JSON tool calls in plain text.
+        """
+        return message
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
@@ -140,6 +147,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
 
             message = response.choices[0].message
+            message = self._parse_message(message)
 
             # Track the last text produced by the LLM (used by on_max_iterations="return_last").
             if message.content:
@@ -328,6 +336,7 @@ class SharedLLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             )
 
             message = response.choices[0].message
+            message = self._parse_message(message)
 
             # Track the last text produced by the LLM (used by on_max_iterations="return_last").
             if message.content:

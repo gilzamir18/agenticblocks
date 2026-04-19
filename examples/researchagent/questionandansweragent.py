@@ -9,6 +9,7 @@ from config import get_model, get_litellm_kwargs
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
 from agenticblocks.blocks.llm.agent import LLMAgentBlock, AgentInput
+from agenticblocks.blocks.llm.heuristic_agent import HeuristicLLMAgentBlock
 from agenticblocks.blocks.flow.prompt_builder import PromptBuilderBlock
 from agenticblocks import as_tool
 from ddgs import DDGS
@@ -25,24 +26,22 @@ async def web_search(query: str):
     with DDGS() as ddgs:
         res = [r for r in ddgs.text(query, max_results=5)]
         to_text = '\n'.join([r['body'] for r in res])
+        print(to_text)
         return to_text
 
 async def main():
     graph = WorkflowGraph()
 
-    prompt_specialist = LLMAgentBlock(
-        name="prompt_specialist",
-        model=get_model(),
-        description="Prompt specialist",
-        system_prompt="You are a prompt specialist. You will receive a topic and you need to create the best possible prompt for a research agent. Return the best possible prompt for a research agent.",
-        litellm_kwargs={"temperature": 0.3, "num_ctx": 4096, "max_tokens":100},
-    )
-
-    research_agent = LLMAgentBlock(
+    research_agent = HeuristicLLMAgentBlock(
         name="research_agent",
         model=get_model(),
         description="Research agent",
-        system_prompt="You are a research assistant. Given a topic, use the web_search tool to gather information about the topic. Write a final journalistic-style report. Strict rule: deliver only plain prose, with absolutely no formatting, lists, or markdown markup.",
+        system_prompt="""You are a research assistant. Given a topic, use the web_search tool to gather 
+                      information about the topic. Write a final structured resport identifying 
+                      the main ideas, important facts and relevant information. Highlight 
+                      the dates (day, month, year), names, places and any specific keywords
+                        that might be relevant to the topic.
+                      """,
         tools=[web_search],
         max_iterations=3,
         debug=True,
@@ -61,10 +60,12 @@ async def main():
 
     answer_specialist = LLMAgentBlock(
         name="answer_specialist",
-        model=get_model(),
+        model="ollama/mistral-nemo:latest",
         description="Answer specialist",
-        system_prompt="You are an answer specialist. You will receive a research topic and a detailed report. Produce a clear, direct answer to the topic in fluent prose. Answer in portuguese brazil.",
-        litellm_kwargs={"temperature": 0.1, "num_ctx": 8192, "max_tokens":100},
+        system_prompt="""You are an answer specialist. You will receive a research
+                        topic and a detailed report. Produce a clear, direct answer 
+                        to the topic in fluent prose based only on report. Answer in portuguese brazil.""",
+        litellm_kwargs={"temperature": 0.1, "num_ctx": 8192, "max_tokens":200},
     )
 
     graph.add_sequence(
@@ -79,10 +80,24 @@ async def main():
 
     executor = WorkflowExecutor(graph)
     ctx = await executor.run(initial_input={"prompt": ""})
+    
+ # === VERIFICANDO O OUTPUT DO BUILDER ===
+    builder_out = ctx.get_output("answer_prompt_builder")
+    print("\n" + "="*50)
+    print("🔍 PROMPT MONTADO PELO BUILDER:")
+    print("="*50)
+    # Como ele retorna um AgentInput, o dado está em .prompt
+    print(builder_out.prompt if builder_out else "Nenhum output!")
+    print("="*50 + "\n")
+    
+    # === VERIFICANDO O OUTPUT DO RESEARCH AGENT ===
+    research_out = ctx.get_output("research_agent")
+    print("🔍 RESULTADO DA PESQUISA BRUTA:")
+    print("="*50)
+    print(research_out.response if research_out else "Nenhum output!")
+    print("="*50 + "\n")
     cr = ctx.get_output("answer_specialist")
-
     print(cr.response)
-
 
 if __name__ == "__main__":
     anyio.run(main)
