@@ -1,8 +1,9 @@
 import json
 import time
+import inspect
 from collections import defaultdict
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import litellm
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.core.block import Block
@@ -87,6 +88,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     use_shared_router: bool = False
     """When True, uses a shared litellm.Router for connection pooling."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    on_iteration: Optional[Callable[[int, List[Dict[str, Any]]], Any]] = None
+    """Optional callback invoked at the start of each loop iteration for debugging. 
+    Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -115,6 +120,12 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         termination_reason: str = "unknown"
 
         while True:
+            if self.on_iteration:
+                if inspect.iscoroutinefunction(self.on_iteration):
+                    await self.on_iteration(iteration_count, messages)
+                else:
+                    self.on_iteration(iteration_count, messages)
+
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
                     # Force a final LLM call without tools so the model synthesises
