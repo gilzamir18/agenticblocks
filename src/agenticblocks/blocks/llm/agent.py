@@ -85,7 +85,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     )
     debug: bool = False
     """When True, print a structured debug report at the end of each run."""
-    use_shared_router: bool = False
+    use_shared_router: bool = True
     """When True, uses a shared litellm.Router for connection pooling."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
     on_iteration: Optional[Callable[[int, List[Dict[str, Any]]], Any]] = None
