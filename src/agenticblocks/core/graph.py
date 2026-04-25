@@ -39,8 +39,20 @@ class WorkflowGraph:
     def __init__(self):
         self.graph = nx.DiGraph()
         self._cycles: dict[str, CycleGroup] = {}
-        # Reverse map: block_name → cycle_name
+        # Reverse map: block_name or cycle_name → parent_cycle_name
         self._node_to_cycle: dict[str, str] = {}
+
+    def _get_actual_entry(self, node_or_cycle: str) -> str:
+        curr = node_or_cycle
+        while curr in self._cycles:
+            curr = self._cycles[curr].entry_block
+        return curr
+
+    def _get_actual_condition(self, node_or_cycle: str) -> str:
+        curr = node_or_cycle
+        while curr in self._cycles:
+            curr = self._cycles[curr].condition_block
+        return curr
 
     # ------------------------------------------------------------------
     # Block registration
@@ -134,13 +146,13 @@ class WorkflowGraph:
         # Collect member block names from edges
         members = list({n for edge in edges for n in edge})
         for m in members:
-            if m not in self.graph.nodes:
+            if m not in self.graph.nodes and m not in self._cycles:
                 raise ValueError(
-                    f"Block '{m}' not found. Call add_block() before add_cycle()."
+                    f"Block or Cycle '{m}' not found. Call add_block() or add_cycle() before add_cycle()."
                 )
             if m in self._node_to_cycle:
                 raise ValueError(
-                    f"Block '{m}' already belongs to cycle '{self._node_to_cycle[m]}'."
+                    f"Block or Cycle '{m}' already belongs to cycle '{self._node_to_cycle[m]}'."
                 )
 
         if condition_block not in members:
@@ -161,7 +173,9 @@ class WorkflowGraph:
 
         # Register all internal edges on the graph (these form the cycle)
         for frm, to in edges:
-            self.graph.add_edge(frm, to, _cycle=name)
+            actual_from = self._get_actual_condition(frm)
+            actual_to   = self._get_actual_entry(to)
+            self.graph.add_edge(actual_from, actual_to, _cycle=name)
 
         cycle = CycleGroup(
             name=name,
@@ -199,8 +213,8 @@ class WorkflowGraph:
 
             # Resolve the actual node to connect in the real graph:
             # cycle output flows from condition_block; cycle input enters at entry_block.
-            actual_from = self._cycles[from_id].condition_block if from_is_cycle else from_id
-            actual_to   = self._cycles[to_id].entry_block       if to_is_cycle   else to_id
+            actual_from = self._get_actual_condition(from_id)
+            actual_to   = self._get_actual_entry(to_id)
             # Mark as cross-cycle edge so collapsed_graph() can handle it
             self.graph.add_edge(actual_from, actual_to, _cross_cycle=True)
         else:
@@ -214,34 +228,45 @@ class WorkflowGraph:
 
     def collapsed_graph(self) -> nx.DiGraph:
         """
-        Returns a DAG view of the graph where each CycleGroup is collapsed
+        Returns a DAG view of the graph where each top-level CycleGroup is collapsed
         into a single virtual node. Used by:
           - _validate()     (check that there are no undeclared cycles)
           - _build_waves()  (topological ordering)
         """
         g = nx.DiGraph()
 
-        # Add non-cycle-member nodes
+        def get_top(n):
+            seen = set()
+            curr = n
+            while curr in self._node_to_cycle and curr not in seen:
+                seen.add(curr)
+                curr = self._node_to_cycle[curr]
+            return curr
+
+        # Add top-level non-cycle nodes
         for node in self.graph.nodes:
-            if node not in self._node_to_cycle:
+            top = get_top(node)
+            if top == node:
                 g.add_node(node)
 
-        # Add cycle virtual nodes
+        # Add top-level cycles
         for cycle_name in self._cycles:
-            g.add_node(cycle_name)
+            top = get_top(cycle_name)
+            if top == cycle_name:
+                g.add_node(cycle_name)
 
         # Collapse edges: cycle-internal edges are skipped;
-        # all other edges are remapped using the cycle name as endpoint.
+        # all other edges are remapped using the top-level cycle name as endpoint.
         for frm, to, data in self.graph.edges(data=True):
             if data.get("_cycle"):
                 # Internal cycle edge — skip
                 continue
 
-            v_from = self._node_to_cycle.get(frm, frm)
-            v_to   = self._node_to_cycle.get(to,  to)
+            v_from = get_top(frm)
+            v_to   = get_top(to)
 
             if v_from == v_to:
-                # Both endpoints collapsed to the same cycle — skip self-loop
+                # Both endpoints collapsed to the same top-level cycle — skip self-loop
                 continue
 
             g.add_edge(v_from, v_to)

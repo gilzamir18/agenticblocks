@@ -166,7 +166,7 @@ class WorkflowExecutor:
     # Cycle execution — the iterative producer→validator loop
     # ------------------------------------------------------------------
 
-    async def _execute_cycle(self, cycle_name: str, ctx: ExecutionContext) -> None:
+    async def _execute_cycle(self, cycle_name: str, ctx: ExecutionContext, override_input: dict | None = None) -> None:
         cycle = self.graph._cycles[cycle_name]
         g     = self.graph.graph
 
@@ -174,7 +174,11 @@ class WorkflowExecutor:
             print(f"\n[Cycle:{cycle_name}] Starting (max {cycle.max_iterations} iterations)")
 
         # ── Collect initial input from outside the cycle ──────────────────
-        input_data      = self._collect_cycle_entry_inputs(cycle, ctx)
+        if override_input is not None:
+            input_data = override_input
+        else:
+            input_data = self._collect_cycle_entry_inputs(cycle, ctx)
+            
         original_prompt = input_data.get(cycle.prompt_field, "")
         current_input   = input_data.copy()
 
@@ -190,11 +194,20 @@ class WorkflowExecutor:
             current_output: Optional[BaseModel] = None
 
             for i, block_name in enumerate(chain):
-                block: Block = g.nodes[block_name]["block"]
+                is_nested_cycle = block_name in self.graph._cycles
+                is_condition_of_outer = (block_name == cycle.condition_block)
+
+                # Identify the actual target block to determine input schema
+                target_block: Block
+                if is_nested_cycle:
+                    nested_entry = self.graph._get_actual_entry(block_name)
+                    target_block = g.nodes[nested_entry]["block"]
+                else:
+                    target_block = g.nodes[block_name]["block"]
 
                 if i == 0:
                     # Entry block — receives the (possibly augmented) prompt
-                    block_schema = block.input_schema()
+                    block_schema = target_block.input_schema()
                     try:
                         block_input = block_schema(**current_input)
                     except Exception:
@@ -208,18 +221,28 @@ class WorkflowExecutor:
                             block_input = block_schema(**data)
                         else:
                             raise
+                            
+                    if is_nested_cycle:
+                        await self._execute_cycle(block_name, ctx, override_input=block_input.model_dump())
+                        current_output = ctx.get_output(block_name)
+                    else:
+                        current_output = await target_block.run(block_input)
                 else:
                     # Subsequent block — map previous output into its input
                     block_input = self._map_output_to_input(
-                        block,
+                        target_block,
                         current_output,
-                        is_condition=(block_name == cycle.condition_block),
+                        is_condition=is_condition_of_outer,
                     )
-
-                current_output = await block.run(block_input)
+                    
+                    if is_nested_cycle:
+                        await self._execute_cycle(block_name, ctx, override_input=block_input.model_dump())
+                        current_output = ctx.get_output(block_name)
+                    else:
+                        current_output = await target_block.run(block_input)
 
                 # Track last non-condition output as "producer output"
-                if block_name != cycle.condition_block:
+                if not is_condition_of_outer:
                     last_producer_output = current_output
 
             # current_output is now the condition block's output
@@ -290,13 +313,23 @@ class WorkflowExecutor:
     # Input collection helpers
     # ------------------------------------------------------------------
 
+    def _get_top_cycle(self, node_id: str) -> str | None:
+        curr = self.graph._node_to_cycle.get(node_id)
+        if not curr:
+            return None
+        while curr in self.graph._node_to_cycle:
+            next_val = self.graph._node_to_cycle[curr]
+            if next_val == curr:
+                break
+            curr = next_val
+        return curr
+
     def _collect_inputs(self, node_id: str, ctx: ExecutionContext) -> dict:
         """
         Collects and merges inputs for a regular (non-cycle) node.
         Handles predecessors that are cycle groups transparently.
         """
         g            = self.graph.graph
-        node_cycle   = self.graph._node_to_cycle.get(node_id)
         predecessors = list(g.predecessors(node_id))
 
         if not predecessors:
@@ -306,21 +339,18 @@ class WorkflowExecutor:
         seen_cycles:  set[str] = set()
 
         for pred in predecessors:
-            pred_cycle = self.graph._node_to_cycle.get(pred)
+            top_cycle = self._get_top_cycle(pred)
 
-            if pred_cycle and pred_cycle != node_cycle:
-                # pred is inside a different cycle — pull the cycle's output
-                if pred_cycle not in seen_cycles:
-                    seen_cycles.add(pred_cycle)
-                    cycle_out = ctx.get_output(pred_cycle)
+            if top_cycle:
+                if top_cycle not in seen_cycles:
+                    seen_cycles.add(top_cycle)
+                    cycle_out = ctx.get_output(top_cycle)
                     if cycle_out:
                         merged.update(cycle_out.model_dump())
-            elif not pred_cycle:
-                # Regular node predecessor
+            else:
                 prev = ctx.get_output(pred)
                 if prev:
                     merged.update(prev.model_dump())
-            # Intra-cycle predecessors are handled by _execute_cycle — skip here
 
         return merged or ctx.store.get("__input__", {})
 
@@ -329,24 +359,41 @@ class WorkflowExecutor:
         Collects inputs for the cycle's entry_block from outside the cycle.
         """
         g = self.graph.graph
+        actual_entry = self.graph._get_actual_entry(cycle.entry_block)
+
+        def is_in_cycle(n, target_cycle):
+            curr = self.graph._node_to_cycle.get(n)
+            while curr:
+                if curr == target_cycle:
+                    return True
+                curr = self.graph._node_to_cycle.get(curr)
+            return False
+
         external_preds = [
-            p for p in g.predecessors(cycle.entry_block)
-            if self.graph._node_to_cycle.get(p) != cycle.name
+            p for p in g.predecessors(actual_entry)
+            if not is_in_cycle(p, cycle.name)
         ]
 
         if not external_preds:
             return ctx.store.get("__input__", {})
 
-        if len(external_preds) == 1:
-            prev = ctx.get_output(external_preds[0])
-            return prev.model_dump() if prev else {}
-
         merged: dict = {}
+        seen_cycles: set[str] = set()
+        
         for pred in external_preds:
-            prev = ctx.get_output(pred)
-            if prev:
-                merged.update(prev.model_dump())
-        return merged
+            top_cycle = self._get_top_cycle(pred)
+            if top_cycle:
+                if top_cycle not in seen_cycles:
+                    seen_cycles.add(top_cycle)
+                    cycle_out = ctx.get_output(top_cycle)
+                    if cycle_out:
+                        merged.update(cycle_out.model_dump())
+            else:
+                prev = ctx.get_output(pred)
+                if prev:
+                    merged.update(prev.model_dump())
+
+        return merged or ctx.store.get("__input__", {})
 
     # ------------------------------------------------------------------
     # Inter-block mapping helpers (within a cycle chain)
