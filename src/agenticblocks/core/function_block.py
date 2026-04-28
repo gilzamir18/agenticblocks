@@ -30,13 +30,20 @@ class FunctionOutput(BaseModel):
     result: Any
 
 
-def _build_input_model(func: Callable) -> Type[BaseModel]:
+def _build_input_model(func: Callable) -> tuple[Type[BaseModel], Optional[str]]:
     """Dynamically builds a Pydantic model from the function's parameters."""
     sig = inspect.signature(func)
     try:
         hints = get_type_hints(func)
     except Exception:
         hints = {}
+
+    params = [p for name, p in sig.parameters.items() if name not in ("self", "cls")]
+    if len(params) == 1:
+        param_name = params[0].name
+        annotation = hints.get(param_name, Any)
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation, param_name
 
     fields: dict[str, Any] = {}
     for param_name, param in sig.parameters.items():
@@ -49,7 +56,7 @@ def _build_input_model(func: Callable) -> Type[BaseModel]:
             fields[param_name] = (annotation, param.default)
 
     model_name = f"{''.join(w.title() for w in func.__name__.split('_'))}Input"
-    return create_model(model_name, **fields)  # type: ignore[call-overload]
+    return create_model(model_name, **fields), None  # type: ignore[call-overload]
 
 
 class FunctionBlock(Block):
@@ -71,6 +78,7 @@ class FunctionBlock(Block):
     # Private attributes — not exposed in Pydantic schema or serialised.
     _func: Callable = PrivateAttr()
     _input_model: Type[BaseModel] = PrivateAttr()
+    _pass_model_param: Optional[str] = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -83,7 +91,7 @@ class FunctionBlock(Block):
         func_desc = description or inspect.getdoc(func) or f"Executes {func_name}"
         super().__init__(name=func_name, description=func_desc, **data)
         self._func = func
-        self._input_model = _build_input_model(func)
+        self._input_model, self._pass_model_param = _build_input_model(func)
 
     # Instance override: returns the model generated specifically for this function.
     # Since input_schema is a classmethod on Block, we call it via the instance —
@@ -92,7 +100,10 @@ class FunctionBlock(Block):
         return self._input_model
 
     async def run(self, input: BaseModel) -> BaseModel:  # type: ignore[override]
-        kwargs = input.model_dump()
+        if self._pass_model_param:
+            kwargs = {self._pass_model_param: input}
+        else:
+            kwargs = input.model_dump()
 
         if asyncio.iscoroutinefunction(self._func):
             raw = await self._func(**kwargs)
