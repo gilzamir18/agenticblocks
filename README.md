@@ -114,6 +114,13 @@ Declare validator loops directly in the graph without any wrapper block:
 ```python
 from agenticblocks import as_tool
 from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.blocks.llm.agent import LLMAgentBlock
+
+writer = LLMAgentBlock(
+    name="writer",
+    model="gpt-4o-mini",
+    system_prompt="Write a detailed essay about AI."
+)
 
 @as_tool
 def validate_output(content: str) -> dict:
@@ -226,6 +233,13 @@ Declare um loop validador diretamente no grafo — sem bloco orquestrador especi
 ```python
 from agenticblocks import as_tool
 from agenticblocks.core.graph import WorkflowGraph
+from agenticblocks.blocks.llm.agent import LLMAgentBlock
+
+escritor = LLMAgentBlock(
+    name="escritor",
+    model="gpt-4o-mini",
+    system_prompt="Escreva uma redação detalhada sobre IA."
+)
 
 @as_tool
 def validar(content: str) -> dict:
