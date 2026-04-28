@@ -129,6 +129,10 @@ graph.connect("refine", "publisher")
 
 The executor runs the cycle, propagates feedback to the producer on each rejection, and stores the result in `ctx` under the cycle name.
 
+#### 8. Code-Generation Planning
+
+AgenticBlocks supports dynamic code execution out-of-the-box. Instead of relying on predefined tools, you can use the `CodePlanExecutorBlock` to orchestrate an LLM that generates a standalone Python script to solve a problem. The generated code is automatically executed either locally or securely in an ephemeral Docker container via the `PythonCodeExecutorBlock`. See more in [docs/codeplanner.md](docs/codeplanner.md).
+
 ### Examples & Model Recommendations
 
 It is recommended to install [Ollama](https://ollama.com/) with the model `granite4:1b` (`ollama run granite4:1b`) to test the examples locally. Alternatively, you can modify the examples to use a commercial API, such as Gemini (`gemini/gemini-2.0-flash`) or OpenAI.
@@ -142,6 +146,9 @@ It is recommended to install [Ollama](https://ollama.com/) with the model `grani
 | `05_basic_blocks.py` | Overhead benchmarking |
 | `06_functionastool.py` | `@as_tool` decorator for plain functions |
 | `07_validator_loop.py` | Native graph cycle with producer + validator feedback loop |
+| `08_planner.py` | JSON Plan-and-Execute pattern |
+| `09_code_planner_local.py` | Code-Generation Planner running locally |
+| `10_code_planner_docker.py` | Code-Generation Planner running inside a Docker sandbox |
 
 > **Note:** Quantized or small models like `granite` may produce lower-quality reasoning and struggle with native tool calling. For reliable local tool usage, use `llama3.1` or `mistral-nemo`. If using `granite4`, prefer the `HeuristicLLMAgentBlock` to capture hallucinated JSON tool calls. Large commercial models (OpenAI, Gemini, Anthropic) yield excellent results but require an API key.
 
@@ -227,6 +234,10 @@ graph.connect("refinar", "publicador")
 
 O executor itera automaticamente, injeta o feedback no prompt do produtor a cada rejeição e disponibiliza o resultado final em `ctx.get_output("refinar")`.
 
+#### 8. Planejamento Baseado em Geração de Código
+
+O AgenticBlocks oferece suporte a execução dinâmica de código nativamente. Em vez de depender de ferramentas pré-definidas, você pode usar o `CodePlanExecutorBlock` para orquestrar um LLM na geração de um script Python completo capaz de resolver um problema. O código gerado é então testado e executado automaticamente no modo local ou de forma segura isolado em um contêiner Docker via `PythonCodeExecutorBlock`. Veja mais em [docs/codeplanner.md](docs/codeplanner.md).
+
 ### Exemplos & Modelos
 
 Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b` para testar localmente. Alternativamente, use uma API comercial como Gemini ou OpenAI.
@@ -240,5 +251,8 @@ Recomenda-se instalar o [Ollama](https://ollama.com/) com o modelo `granite4:1b`
 | `05_basic_blocks.py` | Benchmark de overhead |
 | `06_functionastool.py` | Decorator `@as_tool` para funções simples |
 | `07_validator_loop.py` | Ciclo nativo no grafo: produtor + validador com feedback |
+| `08_planner.py` | Padrão JSON Plan-and-Execute |
+| `09_code_planner_local.py` | Planejador via Geração de Código (ambiente Local) |
+| `10_code_planner_docker.py` | Planejador via Geração de Código (Sandbox Docker) |
 
 > **Atenção:** Modelos quantizados ou menores podem produzir resultados abaixo do esperado e ter dificuldade com chamadas nativas de ferramentas. Para uso local confiável de ferramentas, prefira `llama3.1` ou `mistral-nemo`. Caso use `granite4`, utilize o `HeuristicLLMAgentBlock`. Modelos comerciais grandes geram excelentes resultados, mas exigem configuração de API KEY.
