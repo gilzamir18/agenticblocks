@@ -28,6 +28,9 @@ class PythonCodeExecutorBlock(Block[PythonCodeExecutorInput, PythonCodeExecutorO
     execution_mode: Literal["local", "docker"] = "local"
     docker_image: str = "python:3.10-slim"
     timeout: int = 10  # Timeout in seconds for docker/subprocess
+    inject_module: Any = Field(default=None, description="A python module or a list of modules whose namespace will be injected into the local execution environment (only for 'local' execution mode).")
+
+    model_config = {"arbitrary_types_allowed": True}
     
     async def run(self, input: PythonCodeExecutorInput) -> PythonCodeExecutorOutput:
         code = self._extract_code(input.code)
@@ -67,6 +70,14 @@ class PythonCodeExecutorBlock(Block[PythonCodeExecutorInput, PythonCodeExecutorO
         
         # We inject a clean environment
         global_env = {}
+        
+        if self.inject_module is not None:
+            modules_to_inject = self.inject_module if isinstance(self.inject_module, (list, tuple)) else [self.inject_module]
+            for mod in modules_to_inject:
+                for k, v in mod.__dict__.items():
+                    if not k.startswith("_"):
+                        global_env[k] = v
+
         local_env = {}
         
         exit_code = 0

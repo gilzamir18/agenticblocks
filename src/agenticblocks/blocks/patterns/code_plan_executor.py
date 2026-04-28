@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Callable, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from agenticblocks.core.block import Block
 from agenticblocks.blocks.patterns.code_executor import PythonCodeExecutorBlock, PythonCodeExecutorInput
 
@@ -21,6 +21,7 @@ class CodePlanExecutorBlock(Block[CodePlanExecutorInput, CodePlanExecutorOutput]
     execution_mode: str = "local" # 'local' or 'docker'
     docker_image: str = "python:3.10-slim"
     max_retries: int = 2
+    inject_module: Any = Field(default=None, description="A python module or a list of modules whose namespace will be injected into the local execution environment (only for 'local' execution mode).")
     prompt_template: str = (
         "OBJETIVO DO PLANEJADOR:\n{task}\n\n"
         "HISTÓRICO RECENTE:\n{history}\n\n"
@@ -35,7 +36,8 @@ class CodePlanExecutorBlock(Block[CodePlanExecutorInput, CodePlanExecutorOutput]
         extra_instruction = ""
         code_executor = PythonCodeExecutorBlock(
             execution_mode=self.execution_mode,
-            docker_image=self.docker_image
+            docker_image=self.docker_image,
+            inject_module=self.inject_module
         )
 
         for attempt in range(self.max_retries + 1):
