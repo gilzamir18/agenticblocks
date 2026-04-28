@@ -20,7 +20,14 @@ A library to build agent workflows like **Lego blocks**. Each step in your agent
 
 ### Getting Started
 
-Install the module locally for development:
+Install the latest release:
+
+```bash
+pip install agenticblocks.io
+```
+
+Or for local development:
+
 ```bash
 pip install -e .
 ```
@@ -170,7 +177,13 @@ Uma biblioteca para construir fluxos de agentes no estilo **Lego**. Cada passo d
 
 ### Primeiros Passos
 
-Instale o módulo de forma local editável:
+Instale o último lançamento:
+```bash
+pip install agenticblocks.io
+```
+
+Ou para desenvolvimento local:
+
 ```bash
 pip install -e .
 ```
