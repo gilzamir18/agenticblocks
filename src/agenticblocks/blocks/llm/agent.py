@@ -72,7 +72,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     tools: List[Block] = []
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
-    on_max_iterations: str = "stop"
+    on_max_iterations: str = "return_last"
     """Behaviour when max_iterations is reached.
     - "stop"        : return a fixed stop message (default, backward-compatible).
     - "return_last" : force a final LLM call (no tools) to synthesise accumulated
