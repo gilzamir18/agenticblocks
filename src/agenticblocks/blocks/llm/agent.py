@@ -8,6 +8,7 @@ import litellm
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.core.block import Block
 from agenticblocks.tools.a2a_bridge import block_to_tool_schema
+from agenticblocks.runtime.state import TokenUsage, _current_ctx
 
 
 class AgentInput(BaseModel):
@@ -92,6 +93,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """Optional callback invoked at the start of each loop iteration for debugging. 
     Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
     Can be a synchronous or asynchronous function."""
+    on_token_usage: Optional[Callable[["TokenUsage"], Any]] = None
+    """Optional callback invoked after each LLM call with token statistics.
+    Signature: `def callback(usage: TokenUsage) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -101,6 +106,37 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         Useful for intercepting hallucinated JSON tool calls in plain text.
         """
         return message
+
+    async def _emit_token_usage(self, response: Any, step: int) -> None:
+        """
+        Extracts token usage from a LiteLLM response and emits a TokenUsage record:
+          - Appends to ExecutionContext.token_stats (when inside a WorkflowExecutor run).
+          - Invokes self.on_token_usage callback (when set).
+
+        Safe to call when no ExecutionContext is active (standalone use).
+        """
+        usage = getattr(response, "usage", None)
+        record = TokenUsage(
+            block_name=self.name,
+            step=step,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        )
+
+        # Push to the shared ExecutionContext when running inside WorkflowExecutor
+        try:
+            ctx = _current_ctx.get()
+            await ctx.add_token_usage(record)
+        except LookupError:
+            pass  # Running standalone, outside a WorkflowExecutor
+
+        # Invoke optional user-supplied callback
+        if self.on_token_usage:
+            if inspect.iscoroutinefunction(self.on_token_usage):
+                await self.on_token_usage(record)
+            else:
+                self.on_token_usage(record)
 
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
@@ -145,7 +181,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         final_resp = await litellm.acompletion(
                             model=self.model, messages=messages, **final_kwargs
                         )
-                    
+
+                    await self._emit_token_usage(final_resp, step=iteration_count)
+
                     termination_reason = "max_iterations reached → synthesised final response"
                     output = AgentOutput(
                         response=final_resp.choices[0].message.content or last_response,
@@ -193,6 +231,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     messages=messages,
                     **kwargs
                 )
+
+            await self._emit_token_usage(response, step=iteration_count)
 
             message = response.choices[0].message
             message = self._parse_message(message)
@@ -278,7 +318,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             if tool_call_count >= self.max_tool_calls:
                 final_kwargs = self.litellm_kwargs.copy()
                 final_kwargs.pop("tool_choice", None)
-                
+
                 if self.use_shared_router:
                     router = _get_shared_router(self.model)
                     final_response = await router.acompletion(
@@ -292,7 +332,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         messages=messages,
                         **final_kwargs
                     )
-                    
+
+                await self._emit_token_usage(final_response, step=iteration_count)
+
                 termination_reason = f"max_tool_calls ({self.max_tool_calls}) reached → forced final response"
                 output = AgentOutput(
                     response=final_response.choices[0].message.content or "",
