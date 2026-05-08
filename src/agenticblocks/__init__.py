@@ -5,6 +5,17 @@ from agenticblocks.core.function_block import FunctionBlock, as_tool
 from agenticblocks.blocks.flow.prompt_builder import PromptBuilderBlock
 from agenticblocks.blocks.llm.heuristic_agent import HeuristicLLMAgentBlock
 from agenticblocks.blocks.patterns.plan_executor import PlanExecutorBlock
+from agenticblocks.blocks.patterns.planner_chat import PlannerChatBlock, PlannerChatInput, PlannerChatOutput
 from agenticblocks.runtime.state import TokenUsage
 
-__all__ = ["FunctionBlock", "as_tool", "PromptBuilderBlock", "HeuristicLLMAgentBlock", "PlanExecutorBlock", "TokenUsage"]
+__all__ = [
+    "FunctionBlock",
+    "as_tool",
+    "PromptBuilderBlock",
+    "HeuristicLLMAgentBlock",
+    "PlanExecutorBlock",
+    "PlannerChatBlock",
+    "PlannerChatInput",
+    "PlannerChatOutput",
+    "TokenUsage",
+]
