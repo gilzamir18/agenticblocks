@@ -19,9 +19,9 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
     validator_fn: Optional[Callable[[str, List[Dict[str, Any]]], Tuple[bool, str]]] = None
     max_reply_retries: int = 2
     reply_prompt_template: str = (
-        "BRIEFING DO PLANNER:\n{briefing}\n\n"
-        "DADOS REAIS A USAR:\n{observations}\n\n"
-        "HISTÓRICO RECENTE:\n{history}\n\n"
+        "PLANNER BRIEFING:\n{briefing}\n\n"
+        "REAL DATA TO USE:\n{observations}\n\n"
+        "RECENT HISTORY:\n{history}\n\n"
         "{extra_instruction}\n"
     )
 
@@ -30,7 +30,7 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
     async def run(self, input: PlanExecutorInput) -> PlanExecutorOutput:
         steps = input.plan.get("steps", [])
         if not steps:
-            return PlanExecutorOutput(response="Plano vazio.", observations=[])
+            return PlanExecutorOutput(response="Empty plan.", observations=[])
 
         observations = []
         final_reply = None
@@ -58,8 +58,8 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
                         if ok:
                             break
                         extra_instruction = (
-                            f"AVISO: sua resposta anterior foi rejeitada. Motivo: {feedback}\n"
-                            f"Corrija sua resposta com base neste aviso usando APENAS os DADOS REAIS A USAR."
+                            f"WARNING: your previous response was rejected. Reason: {feedback}\n"
+                            f"Fix your response based on this warning using ONLY the REAL DATA TO USE."
                         )
                     else:
                         break
@@ -72,7 +72,7 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
 
             tool_block = tool_registry.get(action)
             if tool_block is None:
-                obs = f"ERRO: ação desconhecida '{action}'"
+                obs = f"ERROR: unknown action '{action}'"
             else:
                 try:
                     input_model = tool_block.input_schema()(**args)
@@ -83,18 +83,18 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
                     else:
                         obs = str(result)
                 except Exception as e:
-                    obs = f"ERRO em {action}: {e}"
+                    obs = f"ERROR in {action}: {e}"
 
             observations.append({"action": action, "result": obs})
 
         return PlanExecutorOutput(
-            response=final_reply or "(sem resposta)",
+            response=final_reply or "(no response)",
             observations=observations
         )
 
     def _format_observations(self, observations: List[Dict[str, Any]]) -> str:
         if not observations:
-            return "(nenhum dado coletado)"
+            return "(no data collected)"
         out = []
         for obs in observations:
             out.append(f"[{obs['action']}] {obs['result']}")
@@ -102,7 +102,7 @@ class PlanExecutorBlock(Block[PlanExecutorInput, PlanExecutorOutput]):
 
     async def _do_reply(self, briefing: str, history: str, observations: List[Dict[str, Any]], extra_instruction: str = "") -> str:
         obs_block = self._format_observations(observations)
-        hist_block = history or "(sem histórico)"
+        hist_block = history or "(no history)"
 
         prompt = self.reply_prompt_template.format(
             briefing=briefing,

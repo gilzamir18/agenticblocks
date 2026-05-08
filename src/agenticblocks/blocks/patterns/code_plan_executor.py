@@ -23,10 +23,10 @@ class CodePlanExecutorBlock(Block[CodePlanExecutorInput, CodePlanExecutorOutput]
     max_retries: int = 2
     inject_module: Any = Field(default=None, description="A python module or a list of modules whose namespace will be injected into the local execution environment (only for 'local' execution mode).")
     prompt_template: str = (
-        "OBJETIVO DO PLANEJADOR:\n{task}\n\n"
-        "HISTÓRICO RECENTE:\n{history}\n\n"
-        "Escreva um script Python completo que resolva a tarefa acima.\n"
-        "O código deve imprimir (usando print) o resultado final ou dados necessários.\n"
+        "PLANNER OBJECTIVE:\n{task}\n\n"
+        "RECENT HISTORY:\n{history}\n\n"
+        "Write a complete Python script that solves the task above.\n"
+        "The code must print (using print) the final result or necessary data.\n"
         "{extra_instruction}\n"
     )
 
@@ -64,7 +64,7 @@ class CodePlanExecutorBlock(Block[CodePlanExecutorInput, CodePlanExecutorOutput]
             if exec_output.is_valid:
                 # Success
                 return CodePlanExecutorOutput(
-                    response="Execução finalizada com sucesso.",
+                    response="Execution completed successfully.",
                     code_generated=agent_reply,
                     execution_stdout=exec_output.stdout,
                     execution_stderr=exec_output.stderr,
@@ -73,15 +73,15 @@ class CodePlanExecutorBlock(Block[CodePlanExecutorInput, CodePlanExecutorOutput]
             else:
                 # Failure, retry with error feedback
                 extra_instruction = (
-                    f"AVISO: O código anterior falhou na execução.\n"
-                    f"Código de saída: {exec_output.exit_code}\n"
-                    f"Erro/Stderr:\n{exec_output.stderr}\n"
+                    f"WARNING: The previous code failed to execute.\n"
+                    f"Exit code: {exec_output.exit_code}\n"
+                    f"Error/Stderr:\n{exec_output.stderr}\n"
                     f"Stdout:\n{exec_output.stdout}\n\n"
-                    "Por favor, corrija o código Python e retorne o novo script completo."
+                    "Please fix the Python code and return the new complete script."
                 )
 
         return CodePlanExecutorOutput(
-            response="Falha ao executar o plano após as tentativas.",
+            response="Failed to execute the plan after all attempts.",
             code_generated=agent_reply,
             execution_stdout=exec_output.stdout,
             execution_stderr=exec_output.stderr,
