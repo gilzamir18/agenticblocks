@@ -76,9 +76,6 @@ class PythonCodeExecutorBlock(Block[PythonCodeExecutorInput, PythonCodeExecutorO
             for mod in modules_to_inject:
                 if hasattr(mod, '__name__'):
                     global_env[mod.__name__] = mod
-                for k, v in mod.__dict__.items():
-                    if not k.startswith("_"):
-                        global_env[k] = v
 
         exit_code = 0
         error_msg = None
