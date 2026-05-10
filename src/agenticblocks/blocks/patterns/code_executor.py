@@ -74,18 +74,18 @@ class PythonCodeExecutorBlock(Block[PythonCodeExecutorInput, PythonCodeExecutorO
         if self.inject_module is not None:
             modules_to_inject = self.inject_module if isinstance(self.inject_module, (list, tuple)) else [self.inject_module]
             for mod in modules_to_inject:
+                if hasattr(mod, '__name__'):
+                    global_env[mod.__name__] = mod
                 for k, v in mod.__dict__.items():
                     if not k.startswith("_"):
                         global_env[k] = v
 
-        local_env = {}
-        
         exit_code = 0
         error_msg = None
         
         with contextlib.redirect_stdout(stdout_io), contextlib.redirect_stderr(stderr_io):
             try:
-                exec(code, global_env, local_env)
+                exec(code, global_env)
             except Exception as e:
                 exit_code = 1
                 error_msg = traceback.format_exc()
