@@ -24,7 +24,7 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     4. The loop only terminates if the LLM explicitly returns `request_heartbeat=false` 
        via the `send_message` tool, or if the `max_heartbeats` limit is reached.
     """
-    description: str = "MemGPT style Agent with strict heartbeat limits."
+    description: str = "MemGPT style Agent with strict heartbeat limits and context management."
     model: str = "gpt-4o-mini"
     system_prompt: str = (
         "You are an agent with advanced memory capabilities.\n"
@@ -35,9 +35,14 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     )
     tools: List[Block] = []
     max_heartbeats: int = 10
+    max_context_tokens: int = 4000
     debug: bool = False
     use_shared_router: bool = True
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+
+    # Memória de estado persistente do agente
+    internal_history: List[Dict[str, Any]] = Field(default_factory=list)
+    recursive_summary: str = "Nenhum histórico removido ainda."
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -56,6 +61,49 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         except LookupError:
             pass
 
+    def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        try:
+            return litellm.token_counter(model=self.model, messages=messages)
+        except Exception:
+            text = json.dumps(messages)
+            return len(text) // 4
+
+    def _get_safe_eviction_index(self, history: List[Dict[str, Any]], target_count: int) -> int:
+        """Finds a safe index to evict up to, ensuring we don't split tool calls from their results."""
+        if target_count >= len(history): return len(history)
+        safe_index = target_count
+        while safe_index < len(history):
+            msg = history[safe_index]
+            if msg.get("role") == "tool":
+                safe_index += 1
+                continue
+            if safe_index > 0:
+                prev_msg = history[safe_index - 1]
+                if prev_msg.get("role") == "assistant" and prev_msg.get("tool_calls"):
+                    safe_index += 1
+                    continue
+            break
+        return safe_index
+
+    async def _summarize(self, messages_to_evict: List[Dict[str, Any]]) -> str:
+        """Gera um novo resumo recursivo a partir do resumo anterior e das mensagens removidas."""
+        summary_prompt = (
+            f"RESUMO ATUAL: {self.recursive_summary}\n\n"
+            f"NOVAS MENSAGENS EJETADAS DO CONTEXTO:\n{json.dumps(messages_to_evict, indent=2)}\n\n"
+            "Crie um novo resumo conciso que incorpore as informações chave do resumo atual e das novas mensagens ejetadas."
+        )
+        try:
+            resp = await litellm.acompletion(
+                model=self.model,
+                messages=[{"role": "system", "content": "Você é um sumarizador conciso de conversas."},
+                          {"role": "user", "content": summary_prompt}],
+                **self.litellm_kwargs
+            )
+            return resp.choices[0].message.content or self.recursive_summary
+        except Exception as e:
+            if self.debug: print(f"[DEBUG] Erro na sumarização recursiva: {e}")
+            return self.recursive_summary
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
@@ -68,10 +116,8 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         agent_tools.append(send_message)
         litellm_tools = [block_to_tool_schema(b) for b in agent_tools]
 
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": input.prompt}
-        ]
+        # Adiciona a entrada do usuário ao histórico interno
+        self.internal_history.append({"role": "user", "content": input.prompt})
 
         heartbeats_used = 0
         tool_call_count = 0
@@ -80,11 +126,49 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         accumulated_responses = []
 
         while True:
+            # --- Gerenciamento de Contexto (FIFO Queue & Summarization) ---
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": f"Recursive Summary of older messages: {self.recursive_summary}"}
+            ] + self.internal_history
+
+            current_tokens = self._estimate_tokens(messages)
+
+            # Evictação FIFO (100%)
+            if current_tokens > self.max_context_tokens:
+                if self.debug: print(f"[DEBUG] Contexto cheio ({current_tokens} tokens). Iniciando evictação FIFO...")
+                target_evict = max(1, len(self.internal_history) // 4)
+                safe_evict_idx = self._get_safe_eviction_index(self.internal_history, target_evict)
+                
+                if safe_evict_idx == 0 and len(self.internal_history) > 0:
+                    safe_evict_idx = 1
+                
+                if safe_evict_idx < len(self.internal_history):
+                    to_evict = self.internal_history[:safe_evict_idx]
+                    self.internal_history = self.internal_history[safe_evict_idx:]
+                    
+                    self.recursive_summary = await self._summarize(to_evict)
+                    
+                    messages = [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "system", "content": f"Recursive Summary of older messages: {self.recursive_summary}"}
+                    ] + self.internal_history
+                    current_tokens = self._estimate_tokens(messages)
+                else:
+                    if self.debug: print("[DEBUG] Falha ao evictar: impossível quebrar o histórico de forma segura.")
+
+            # Alerta de Pressão de Memória (70%) após possível evictação
+            if current_tokens > self.max_context_tokens * 0.7:
+                messages.append({
+                    "role": "system", 
+                    "content": "SYSTEM ALERT: Memory Pressure (>70% context reached). Move critical facts to archival/working storage if needed."
+                })
+
+            # --- Execução do Turno ---
             heartbeats_left = self.max_heartbeats - heartbeats_used
             kwargs = self.litellm_kwargs.copy()
             kwargs["tools"] = litellm_tools
             
-            # Se não houver mais heartbeats, força a enviar a mensagem final
             if heartbeats_left <= 0:
                 kwargs["tool_choice"] = {"type": "function", "function": {"name": "send_message"}}
                 messages.append({
@@ -96,33 +180,25 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 
             if self.use_shared_router:
                 router = _get_shared_router(self.model)
-                response = await router.acompletion(
-                    model=self.model,
-                    messages=messages,
-                    **kwargs
-                )
+                response = await router.acompletion(model=self.model, messages=messages, **kwargs)
             else:
-                response = await litellm.acompletion(
-                    model=self.model,
-                    messages=messages,
-                    **kwargs
-                )
+                response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
 
             await self._emit_token_usage(response, step=heartbeats_used)
-
             message = response.choices[0].message
             
-            assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
+            assistant_msg_raw = {"role": "assistant", "content": message.content}
             if message.tool_calls:
-                assistant_message["tool_calls"] = [
+                assistant_msg_raw["tool_calls"] = [
                     {"id": tc.id, "type": "function",
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                     for tc in message.tool_calls
                 ]
-            messages.append(assistant_message)
+            
+            self.internal_history.append(assistant_msg_raw)
+            messages.append(assistant_msg_raw)
 
             if not message.tool_calls:
-                # O modelo falhou em usar ferramentas e respondeu em texto livre.
                 if message.content:
                     accumulated_responses.append(message.content)
                 termination_reason = "model returned plain text (violated tool-only rule)"
@@ -144,33 +220,27 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                             accumulated_responses.append(msg_text)
                         
                         hb_req = args.get("request_heartbeat", False)
-                        if hb_req:
-                            wants_heartbeat = True
+                        if hb_req: wants_heartbeat = True
                         
-                        messages.append({
+                        tool_result = {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": function_name,
                             "content": f"Message recorded. Heartbeats remaining: {self.max_heartbeats - heartbeats_used}."
-                        })
+                        }
+                        self.internal_history.append(tool_result)
+                        messages.append(tool_result)
                     except Exception as e:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": function_name,
-                            "content": json.dumps({"error": str(e)})
-                        })
+                        err_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps({"error": str(e)})}
+                        self.internal_history.append(err_res)
+                        messages.append(err_res)
                 else:
-                    # Executa outras ferramentas
-                    wants_heartbeat = True # Outras ferramentas implicitamente pedem heartbeat
+                    wants_heartbeat = True
                     matched_block = next((b for b in agent_tools if b.name == function_name), None)
                     if not matched_block:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": function_name,
-                            "content": json.dumps({"error": f"Tool '{function_name}' not found."})
-                        })
+                        err_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps({"error": f"Tool '{function_name}' not found."})}
+                        self.internal_history.append(err_res)
+                        messages.append(err_res)
                         continue
 
                     try:
@@ -182,19 +252,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         hb_left = self.max_heartbeats - heartbeats_used
                         content_str += f"\n[System: You have {hb_left} heartbeats remaining.]"
                             
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": function_name,
-                            "content": content_str
-                        })
+                        tool_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": content_str}
+                        self.internal_history.append(tool_res)
+                        messages.append(tool_res)
                     except Exception as e:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": function_name,
-                            "content": json.dumps({"error": str(e)})
-                        })
+                        err_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps({"error": str(e)})}
+                        self.internal_history.append(err_res)
+                        messages.append(err_res)
 
             if not wants_heartbeat:
                 termination_reason = "send_message called with request_heartbeat=false"
@@ -205,10 +269,7 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 break
 
         final_text = "\n".join(accumulated_responses)
-        output = AgentOutput(
-            response=final_text,
-            tool_calls_made=tool_call_count
-        )
+        output = AgentOutput(response=final_text, tool_calls_made=tool_call_count)
 
         if self.debug:
             _print_debug_report(
