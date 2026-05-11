@@ -72,6 +72,12 @@ async def main():
             text += f"[{r['timestamp']}] {r['role'].upper()}: {r['content']}\n"
         return text
 
+    @as_tool(name="save_archival", description="Salva de forma persistente fatos importantes sobre o usuário (ex: nome, gostos) ou conhecimentos relevantes na Archival Memory para uso futuro.")
+    def save_archival(content: str, type_meta: str = "fato") -> str:
+        print(f"\n[DEBUG] Agente salvando na Archival Memory: '{content}'...")
+        archival.insert(content, metadata={"tipo": type_meta})
+        return "Informação salva com sucesso na Archival Memory."
+
     prompt_path = os.path.join(base_dir, "MEMGPT.md")
     with open(prompt_path, "r", encoding="utf-8") as f:
         memgpt_system_prompt = f.read()
@@ -83,7 +89,7 @@ async def main():
         max_heartbeats=5,
         debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
         system_prompt=memgpt_system_prompt,
-        tools=[search_archival, search_recall]
+        tools=[search_archival, search_recall, save_archival]
     )
 
     print("\n" + "="*60)

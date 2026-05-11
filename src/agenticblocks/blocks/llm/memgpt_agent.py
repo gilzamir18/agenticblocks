@@ -216,10 +216,79 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             messages.append(assistant_msg_raw)
 
             if not message.tool_calls:
+                parsed_tc = None
                 if message.content:
-                    accumulated_responses.append(message.content)
-                termination_reason = "model returned plain text (violated tool-only rule)"
-                break
+                    content_str = message.content.strip()
+                    
+                    import re
+                    json_match = re.search(r'(\{.*\})', content_str, re.DOTALL)
+                    if json_match:
+                        clean_json_str = json_match.group(1)
+                        # Remove escapes extras em aspas soltas caso seja literal com escapes ruins
+                        clean_json_str = clean_json_str.replace('\\"', '"').replace('\\n', '\n')
+                        
+                        try:
+                            # Tenta parsear o JSON limpo
+                            parsed_json = json.loads(clean_json_str)
+                            if isinstance(parsed_json, dict):
+                                fn_name = parsed_json.get("function") or parsed_json.get("name")
+                                args = parsed_json.get("arguments") or parsed_json.get("parameters") or {}
+                                
+                                # Se args já for uma string (comum se for duplo escape), converte pra dict
+                                if isinstance(args, str):
+                                    try:
+                                        args = json.loads(args)
+                                    except:
+                                        pass
+                                
+                                if fn_name and isinstance(fn_name, str):
+                                    class MockFunction:
+                                        def __init__(self, name, arguments):
+                                            self.name = name
+                                            self.arguments = arguments
+                                    class MockToolCall:
+                                        def __init__(self, id, function):
+                                            self.id = id
+                                            self.function = function
+                                            
+                                    parsed_tc = MockToolCall(
+                                        id=f"call_{int(time.time())}",
+                                        function=MockFunction(
+                                            name=fn_name,
+                                            arguments=json.dumps(args) if isinstance(args, dict) else str(args)
+                                        )
+                                    )
+                        except Exception as e:
+                            if self.debug:
+                                print(f"[DEBUG PARSE FALLBACK ERRO] Falha no fallback. Erro: {e}. Content original: {content_str}")
+                            pass
+
+                if parsed_tc:
+                    message.tool_calls = [parsed_tc]
+                    assistant_msg_raw["tool_calls"] = [
+                        {"id": parsed_tc.id, "type": "function",
+                         "function": {"name": parsed_tc.function.name, "arguments": parsed_tc.function.arguments}}
+                    ]
+                    self.internal_history[-1] = assistant_msg_raw
+                    messages[-1] = assistant_msg_raw
+                else:
+                    if message.content:
+                        err_msg = "SYSTEM ALERT: You violated the tool-only rule. You MUST NOT reply with plain text. Use the `send_message` tool to talk to the user."
+                        if message.content.strip().startswith("{"):
+                            err_msg = "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. You MUST use the proper tool calling API (like send_message)."
+                        
+                        alert_msg = {"role": "user", "content": err_msg}
+                        self.internal_history.append(alert_msg)
+                        messages.append(alert_msg)
+                        
+                        heartbeats_used += 1
+                        if heartbeats_used > self.max_heartbeats:
+                            termination_reason = "model repeatedly violated tool-only rule"
+                            break
+                        continue
+                    else:
+                        termination_reason = "model returned empty response"
+                        break
 
             heartbeats_used += 1
             wants_heartbeat = False
