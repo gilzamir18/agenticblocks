@@ -76,8 +76,8 @@ async def main():
     
     agent = MemGPTAgentBlock(
         name="memgpt_chatbot",
-        model=os.getenv("AGENTICBLOCKS_MODEL", "ollama/mistral-nemo:latest"),
-        litellm_kwargs={},
+        model=os.getenv("AGENTICBLOCKS_MODEL", "gemini/gemini-3-flash-preview"),
+        litellm_kwargs={"fallbacks":["ollama/gemma4:latest"]},
         max_heartbeats=5,
         debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
         system_prompt=(
