@@ -1,0 +1,124 @@
+import asyncio
+import os
+import sys
+
+# Adiciona src ao path para rodar localmente sem instalar
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..", "src")))
+
+from agenticblocks.blocks.memory import ChromaArchivalMemory, SQLiteRecallMemory
+from agenticblocks.core.function_block import as_tool
+from agenticblocks.blocks.llm.agent import AgentInput
+
+async def main():
+    print("Iniciando memórias do agente...")
+    
+    # 1. Instancia as memórias (usaremos persistência local neste diretório)
+    base_dir = os.path.dirname(__file__)
+    archival = ChromaArchivalMemory(
+        collection_name="conhecimento", 
+        persist_directory=os.path.join(base_dir, "mem_archival")
+    )
+    recall = SQLiteRecallMemory(
+        db_path=os.path.join(base_dir, "mem_recall.db")
+    )
+    
+    # 2. Popula a Archival Memory na primeira execução
+    try:
+        if len(archival.collection.get()["ids"]) == 0:
+            print("Carregando base de conhecimento corporativa na Archival Memory...")
+            archival.insert(
+                "A empresa TasteFast foi fundada em 2020 por John Doe.", 
+                metadata={"tipo": "historia"}
+            )
+            archival.insert(
+                "O produto mais vendido é o Cheeseburger Duplo, que custa R$ 25,00.", 
+                metadata={"tipo": "produto"}
+            )
+            archival.insert(
+                "A senha do Wi-Fi para clientes na loja física é 'tastefast2024'.", 
+                metadata={"tipo": "infra"}
+            )
+            archival.insert(
+                "O horário de funcionamento é das 18h às 23h, de terça a domingo.", 
+                metadata={"tipo": "operacao"}
+            )
+            print("Base carregada com sucesso!")
+    except Exception as e:
+        print(f"Aviso ao verificar/popular memória: {e}")
+
+    # 3. Define as ferramentas para o Agente
+    @as_tool(name="search_archival", description="Busca manuais e fatos da empresa por significado semântico. Use quando o usuário perguntar informações da empresa ou dos produtos.")
+    def search_archival(query: str, page: int = 1) -> str:
+        print(f"\n[DEBUG] Agente buscando na Archival Memory por: '{query}'...")
+        resultados = archival.search(query, page=page, page_size=3)
+        if not resultados:
+            return "Nenhuma informação encontrada na Archival Memory."
+        
+        text = f"--- Resultados Archival (Página {page}) ---\n"
+        for r in resultados:
+            text += f"- {r['content']} (Meta: {r['metadata']})\n"
+        return text
+
+    @as_tool(name="search_recall", description="Busca mensagens de conversas passadas com o usuário por palavra-chave. Use quando o usuário mencionar que já falou algo antes ou quando você não souber algo que já deveria saber.")
+    def search_recall(keyword: str) -> str:
+        print(f"\n[DEBUG] Agente buscando na Recall Memory por: '{keyword}'...")
+        resultados = recall.search_keyword(keyword, limit=5)
+        if not resultados:
+            return "Nenhuma lembrança encontrada na Recall Memory."
+        
+        text = "--- Resultados Recall (Histórico) ---\n"
+        for r in resultados:
+            text += f"[{r['timestamp']}] {r['role'].upper()}: {r['content']}\n"
+        return text
+
+    # 4. Instancia o Agente MemGPT
+    from agenticblocks.blocks.llm.memgpt_agent import MemGPTAgentBlock
+    
+    agent = MemGPTAgentBlock(
+        name="memgpt_chatbot",
+        model=os.getenv("AGENTICBLOCKS_MODEL", "ollama/mistral-nemo:latest"),
+        litellm_kwargs={},
+        max_heartbeats=5,
+        debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
+        system_prompt=(
+            "Você é um assistente com capacidades de memória estendida (MemGPT).\n"
+            "Sempre que o usuário perguntar sobre o TasteFast, PROCUROU na `search_archival` antes de responder.\n"
+            "Se o usuário fizer uma pergunta sobre si mesmo (como o próprio nome) e você não tiver isso no contexto imediato, você OBRIGATORIAMENTE deve usar `search_recall` para procurar no histórico.\n"
+            "Responda sempre em português de forma concisa.\n"
+            "LEMBRE-SE: Você DEVE usar a ferramenta `send_message` para falar com o usuário."
+        ),
+        tools=[search_archival, search_recall]
+    )
+
+    print("\n" + "="*60)
+    print("Chatbot MemGPT Iniciado! (Digite 'sair' para encerrar)")
+    print("="*60 + "\n")
+    
+    while True:
+        try:
+            user_input = input("Você: ")
+            if user_input.lower() in ['sair', 'quit', 'exit']:
+                break
+                
+            if not user_input.strip():
+                continue
+                
+            # Salva a entrada do usuário na recall memory
+            recall.append_message(role="user", content=user_input)
+            
+            # Executa o agente
+            result = await agent.run(AgentInput(prompt=user_input))
+            response = result.response
+            
+            # Salva a resposta do agente na recall
+            recall.append_message(role="assistant", content=response)
+            
+            print(f"\nAgente: {response}\n")
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"\nErro durante execução: {e}\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
