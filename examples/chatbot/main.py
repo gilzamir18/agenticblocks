@@ -1,3 +1,4 @@
+from agenticblocks.blocks.llm.memgpt_agent import MemGPTAgentBlock
 import asyncio
 import os
 import sys
@@ -71,18 +72,17 @@ async def main():
             text += f"[{r['timestamp']}] {r['role'].upper()}: {r['content']}\n"
         return text
 
-    # 4. Instancia o Agente MemGPT
-    from agenticblocks.blocks.llm.memgpt_agent import MemGPTAgentBlock
-    
+    prompt_path = os.path.join(base_dir, "MEMGPT.md")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        memgpt_system_prompt = f.read()
+
     agent = MemGPTAgentBlock(
         name="memgpt_chatbot",
         model=os.getenv("AGENTICBLOCKS_MODEL", "ollama/mistral-nemo:latest"),
         litellm_kwargs={"fallbacks":["ollama/gemma4:latest"], "num_ctx":8128},
         max_heartbeats=5,
         debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
-        system_prompt=(
-            "Você é o assistente virtual da lanchonete TasteFast. Responda sempre em português de forma amigável e concisa."
-        ),
+        system_prompt=memgpt_system_prompt,
         tools=[search_archival, search_recall]
     )
 
