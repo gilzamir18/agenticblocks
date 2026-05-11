@@ -76,16 +76,12 @@ async def main():
     
     agent = MemGPTAgentBlock(
         name="memgpt_chatbot",
-        model=os.getenv("AGENTICBLOCKS_MODEL", "gemini/gemini-3-flash-preview"),
-        litellm_kwargs={"fallbacks":["ollama/gemma4:latest"]},
+        model=os.getenv("AGENTICBLOCKS_MODEL", "ollama/mistral-nemo:latest"),
+        litellm_kwargs={"fallbacks":["ollama/gemma4:latest"], "num_ctx":8128},
         max_heartbeats=5,
         debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
         system_prompt=(
-            "Você é um assistente com capacidades de memória estendida (MemGPT).\n"
-            "Sempre que o usuário perguntar sobre o TasteFast, PROCUROU na `search_archival` antes de responder.\n"
-            "Se o usuário fizer uma pergunta sobre si mesmo (como o próprio nome) e você não tiver isso no contexto imediato, você OBRIGATORIAMENTE deve usar `search_recall` para procurar no histórico.\n"
-            "Responda sempre em português de forma concisa.\n"
-            "LEMBRE-SE: Você DEVE usar a ferramenta `send_message` para falar com o usuário."
+            "Você é o assistente virtual da lanchonete TasteFast. Responda sempre em português de forma amigável e concisa."
         ),
         tools=[search_archival, search_recall]
     )

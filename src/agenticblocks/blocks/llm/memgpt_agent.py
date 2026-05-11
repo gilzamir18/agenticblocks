@@ -26,13 +26,7 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """
     description: str = "MemGPT style Agent with strict heartbeat limits and context management."
     model: str = "gpt-4o-mini"
-    system_prompt: str = (
-        "You are an agent with advanced memory capabilities.\n"
-        "RULES:\n"
-        "1. You MUST ALWAYS communicate with the user by calling the `send_message` tool. NEVER reply with plain text.\n"
-        "2. If you need to search memory or use tools, just call them.\n"
-        "3. Every tool call you make (including `send_message` with `request_heartbeat=true`) consumes 1 heartbeat.\n"
-    )
+    system_prompt: str = "You are a helpful AI assistant with extended memory capabilities."
     tools: List[Block] = []
     max_heartbeats: int = 10
     max_context_tokens: int = 4000
@@ -104,6 +98,27 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             if self.debug: print(f"[DEBUG] Erro na sumarização recursiva: {e}")
             return self.recursive_summary
 
+    def _build_system_prompt(self) -> str:
+        tool_descriptions = "\n".join([f"- **{t.name}**: {getattr(t, 'description', 'Sem descrição')}" for t in self.tools])
+        
+        memgpt_rules = f"""
+\n\n---
+# SYSTEM INSTRUCTIONS (MEMGPT ARCHITECTURE)
+
+You are running on an OS-like MemGPT architecture. You have a limited Main Context (working memory) and access to external memory databases via tools.
+
+## AVAILABLE MEMORY TOOLS
+{tool_descriptions}
+- **send_message**: You MUST use this tool to talk to the user.
+
+## CORE RULES
+1. **TOOL-ONLY INTERFACE**: You MUST NEVER reply with plain text. Your only way to communicate with the user is by calling the `send_message` tool.
+2. **HEARTBEATS**: Every tool you call consumes one 'heartbeat'. You can chain multiple tool calls (e.g., search memory, analyze, then send_message). If you use `send_message` and set `request_heartbeat=true`, you retain control to use more tools. If `false`, you yield control to the user.
+3. **MEMORY PRESSURE**: If you see a SYSTEM ALERT about Memory Pressure, your Main Context is almost full. Be concise and rely on memory tools instead of keeping everything in context.
+4. **NO HALLUCINATION**: If the user asks about past interactions or facts you don't know, ALWAYS use your memory tools to retrieve the information before answering.
+"""
+        return self.system_prompt + memgpt_rules
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
@@ -124,11 +139,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         tool_usage: Dict[str, int] = defaultdict(int)
         termination_reason = "unknown"
         accumulated_responses = []
+        
+        final_system_prompt = self._build_system_prompt()
 
         while True:
             # --- Gerenciamento de Contexto (FIFO Queue & Summarization) ---
             messages = [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": final_system_prompt},
                 {"role": "system", "content": f"Recursive Summary of older messages: {self.recursive_summary}"}
             ] + self.internal_history
 
@@ -150,7 +167,7 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     self.recursive_summary = await self._summarize(to_evict)
                     
                     messages = [
-                        {"role": "system", "content": self.system_prompt},
+                        {"role": "system", "content": final_system_prompt},
                         {"role": "system", "content": f"Recursive Summary of older messages: {self.recursive_summary}"}
                     ] + self.internal_history
                     current_tokens = self._estimate_tokens(messages)
