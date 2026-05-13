@@ -30,6 +30,9 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     tools: List[Block] = []
     max_heartbeats: int = 10
     max_context_tokens: int = 4000
+    eviction_threshold: float = 1.0
+    memory_pressure_threshold: float = 0.7
+    tool_call_limits: Dict[str, int] = Field(default_factory=dict)
     debug: bool = False
     use_shared_router: bool = True
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
@@ -99,7 +102,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             return self.recursive_summary
 
     def _build_system_prompt(self) -> str:
-        tool_descriptions = "\n".join([f"- **{t.name}**: {getattr(t, 'description', 'Sem descrição')}" for t in self.tools])
+        tool_descriptions_list = []
+        for t in self.tools:
+            desc = f"- **{t.name}**: {getattr(t, 'description', 'Sem descrição')}"
+            if t.name in self.tool_call_limits:
+                desc += f" [REGRAS: Máximo de {self.tool_call_limits[t.name]} chamada(s) permitida(s)]"
+            tool_descriptions_list.append(desc)
+        tool_descriptions = "\n".join(tool_descriptions_list)
         
         memgpt_rules = f"""
 \n\n---
@@ -151,9 +160,9 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
             current_tokens = self._estimate_tokens(messages)
 
-            # Evictação FIFO (100%)
-            if current_tokens > self.max_context_tokens:
-                if self.debug: print(f"[DEBUG] Contexto cheio ({current_tokens} tokens). Iniciando evictação FIFO...")
+            # Evictação FIFO
+            if current_tokens > self.max_context_tokens * self.eviction_threshold:
+                if self.debug: print(f"[DEBUG] Contexto excedeu limite de evictação ({current_tokens} tokens). Iniciando evictação FIFO...")
                 target_evict = max(1, len(self.internal_history) // 4)
                 safe_evict_idx = self._get_safe_eviction_index(self.internal_history, target_evict)
                 
@@ -174,11 +183,12 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 else:
                     if self.debug: print("[DEBUG] Falha ao evictar: impossível quebrar o histórico de forma segura.")
 
-            # Alerta de Pressão de Memória (70%) após possível evictação
-            if current_tokens > self.max_context_tokens * 0.7:
+            # Alerta de Pressão de Memória após possível evictação
+            if current_tokens > self.max_context_tokens * self.memory_pressure_threshold:
+                pct = int(self.memory_pressure_threshold * 100)
                 messages.append({
                     "role": "system", 
-                    "content": "SYSTEM ALERT: Memory Pressure (>70% context reached). Move critical facts to archival/working storage if needed."
+                    "content": f"SYSTEM ALERT: Memory Pressure (>{pct}% context reached). Move critical facts to archival/working storage if needed."
                 })
 
             # --- Execução do Turno ---
@@ -224,20 +234,29 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                     json_match = re.search(r'(\{.*\})', content_str, re.DOTALL)
                     if json_match:
                         clean_json_str = json_match.group(1)
-                        # Remove escapes extras em aspas soltas caso seja literal com escapes ruins
-                        clean_json_str = clean_json_str.replace('\\"', '"').replace('\\n', '\n')
-                        
+                        parsed_json = None
                         try:
-                            # Tenta parsear o JSON limpo
-                            parsed_json = json.loads(clean_json_str)
-                            if isinstance(parsed_json, dict):
+                            # Primeiro tenta parsear o JSON com strict=False para tolerar quebras de linha literais
+                            parsed_json = json.loads(clean_json_str, strict=False)
+                        except Exception:
+                            try:
+                                # Fallback: se houver escapes excessivos, tenta limpar
+                                heuristic_str = clean_json_str.replace('\\"', '"').replace('\\n', '\n')
+                                parsed_json = json.loads(heuristic_str, strict=False)
+                            except Exception as e:
+                                if self.debug:
+                                    print(f"[DEBUG PARSE FALLBACK ERRO] Falha no fallback. Erro: {e}. Content original: {content_str}")
+                                pass
+
+                        try:
+                            if parsed_json and isinstance(parsed_json, dict):
                                 fn_name = parsed_json.get("function") or parsed_json.get("name")
                                 args = parsed_json.get("arguments") or parsed_json.get("parameters") or {}
                                 
                                 # Se args já for uma string (comum se for duplo escape), converte pra dict
                                 if isinstance(args, str):
                                     try:
-                                        args = json.loads(args)
+                                        args = json.loads(args, strict=False)
                                     except:
                                         pass
                                 
@@ -258,9 +277,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                                             arguments=json.dumps(args) if isinstance(args, dict) else str(args)
                                         )
                                     )
-                        except Exception as e:
-                            if self.debug:
-                                print(f"[DEBUG PARSE FALLBACK ERRO] Falha no fallback. Erro: {e}. Content original: {content_str}")
+                        except Exception:
                             pass
 
                 if parsed_tc:
@@ -297,6 +314,18 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 tool_call_count += 1
                 function_name = tool_call.function.name
                 tool_usage[function_name] += 1
+
+                if function_name in self.tool_call_limits and tool_usage[function_name] > self.tool_call_limits[function_name]:
+                    err_res = {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": function_name,
+                        "content": json.dumps({"error": f"SYSTEM ALERT: Execution Blocked. You exceeded the maximum limit of {self.tool_call_limits[function_name]} calls for '{function_name}'."})
+                    }
+                    self.internal_history.append(err_res)
+                    messages.append(err_res)
+                    wants_heartbeat = True
+                    continue
 
                 if function_name == "send_message":
                     try:
@@ -336,7 +365,12 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                         content_str = json.dumps(result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result)
                         
                         hb_left = self.max_heartbeats - heartbeats_used
-                        content_str += f"\n[System: You have {hb_left} heartbeats remaining.]"
+                        sys_msg = f"\n[System: You have {hb_left} heartbeats remaining."
+                        if function_name in self.tool_call_limits:
+                            calls_left = max(0, self.tool_call_limits[function_name] - tool_usage[function_name])
+                            sys_msg += f" You have {calls_left} calls remaining for '{function_name}'."
+                        sys_msg += "]"
+                        content_str += sys_msg
                             
                         tool_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": content_str}
                         self.internal_history.append(tool_res)

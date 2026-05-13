@@ -11,22 +11,22 @@ from agenticblocks.core.function_block import as_tool
 from agenticblocks.blocks.llm.agent import AgentInput
 
 async def main():
-    print("Iniciando memórias do agente...")
+    print("Iniciando memórias do agente (Default)...")
     
     # 1. Instancia as memórias (usaremos persistência local neste diretório)
     base_dir = os.path.dirname(__file__)
     archival = ChromaArchivalMemory(
         collection_name="conhecimento", 
-        persist_directory=os.path.join(base_dir, "mem_archival")
+        persist_directory=os.path.join(base_dir, "mem_archival_default")
     )
     recall = SQLiteRecallMemory(
-        db_path=os.path.join(base_dir, "mem_recall.db")
+        db_path=os.path.join(base_dir, "mem_recall_default.db")
     )
     
     # 2. Popula a Archival Memory na primeira execução (Opcional)
     try:
         if len(archival.collection.get()["ids"]) == 0:
-            print("Inicializando Archival Memory limpa para a Companhia Virtual...")
+            print("Inicializando Archival Memory limpa para o Agente Padrão...")
     except Exception as e:
         print(f"Aviso ao verificar/popular memória: {e}")
 
@@ -61,23 +61,18 @@ async def main():
         archival.insert(content, metadata={"tipo": type_meta})
         return "Informação salva com sucesso na Archival Memory."
 
-    prompt_path = os.path.join(base_dir, "MEMGPT.md")
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        memgpt_system_prompt = f.read()
-
     agent = MemGPTAgentBlock(
-        name="memgpt_chatbot",
+        name="memgpt_chatbot_default",
         model=os.getenv("AGENTICBLOCKS_MODEL", "ollama/mistral-nemo:latest"),
         litellm_kwargs={"fallbacks":["ollama/gemma4:latest"], "num_ctx":8128},
         max_heartbeats=5,
         tool_call_limits={"send_message":1},
         debug=True, # <--- ATIVA RELATÓRIO DE EXECUÇÃO
-        system_prompt=memgpt_system_prompt,
         tools=[search_archival, search_recall, save_archival]
     )
 
     print("\n" + "="*60)
-    print("Chatbot MemGPT Iniciado! (Digite 'sair' para encerrar)")
+    print("Chatbot MemGPT Iniciado (Padrão)! (Digite 'sair' para encerrar)")
     print("="*60 + "\n")
     
     while True:
