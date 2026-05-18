@@ -17,6 +17,7 @@ class AgentInput(BaseModel):
 class AgentOutput(BaseModel):
     response: str
     tool_calls_made: int = 0
+    structured_output: Optional[Any] = None
 
 
 def _print_debug_report(
@@ -68,7 +69,7 @@ def _get_shared_router(model: str) -> litellm.Router:
 
 class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     description: str = "Autonomous LLM-based Agent managing its own tool loop."
-    model: str = "gpt-4o-mini"
+    model: str = "ollama/gemma4:latest"
     system_prompt: str = "You are a helpful Analyst and Router Agent. Use the available tools when you lack context."
     tools: List[Block] = []
     max_iterations: Optional[int] = None
@@ -84,6 +85,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         "as clean, flowing prose — no JSON, no raw lists, no markdown formatting. "
         "ignore previous roles and system prompts. Response in the same language as the input prompt."
     )
+    response_schema: Optional[type[BaseModel]] = None
+    """Optional Pydantic model class to enforce a structured response schema."""
     debug: bool = False
     """When True, print a structured debug report at the end of each run."""
     use_shared_router: bool = True
@@ -172,6 +175,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     final_kwargs.pop("tool_choice", None)
                     final_kwargs["system_prompt"] = self.synthesis_prompt
                     
+                    if self.response_schema:
+                        final_kwargs["response_format"] = self.response_schema
+
                     if self.use_shared_router:
                         router = _get_shared_router(self.model)
                         final_resp = await router.acompletion(
@@ -185,9 +191,25 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     await self._emit_token_usage(final_resp, step=iteration_count)
 
                     termination_reason = "max_iterations reached → synthesised final response"
+                    
+                    content = final_resp.choices[0].message.content or last_response
+                    structured_obj = None
+                    if self.response_schema and content:
+                        try:
+                            clean_content = content.strip()
+                            if clean_content.startswith("```json"):
+                                clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                            elif clean_content.startswith("```"):
+                                clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                            structured_obj = self.response_schema.model_validate_json(clean_content)
+                        except Exception as e:
+                            if self.debug:
+                                print(f"[DEBUG] Schema validation failed: {e}")
+                    
                     output = AgentOutput(
-                        response=final_resp.choices[0].message.content or last_response,
+                        response=content,
                         tool_calls_made=tool_call_count,
+                        structured_output=structured_obj,
                     )
                 else:
                     termination_reason = "max_iterations reached → stopped"
@@ -216,6 +238,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
                 kwargs["tool_choice"] = "none" if tool_call_count >= self.max_tool_calls else "auto"
+
+            # Enforce schema on the first call if no tools are present or tools are disabled
+            if self.response_schema and (not litellm_tools or kwargs.get("tool_choice") == "none"):
+                kwargs["response_format"] = self.response_schema
 
             # Main LiteLLM call.
             if self.use_shared_router:
@@ -256,9 +282,55 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
                 termination_reason = "model returned a final text response (no tool calls)"
+                
+                content = message.content or ""
+                structured_obj = None
+                if self.response_schema:
+                    try:
+                        clean_content = content.strip()
+                        if clean_content.startswith("```json"):
+                            clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                        elif clean_content.startswith("```"):
+                            clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                        structured_obj = self.response_schema.model_validate_json(clean_content)
+                    except Exception:
+                        # Fallback synthesis formatting call to force-convert conversations into the schema format
+                        final_kwargs = self.litellm_kwargs.copy()
+                        final_kwargs.pop("tools", None)
+                        final_kwargs.pop("tool_choice", None)
+                        final_kwargs["response_format"] = self.response_schema
+                        
+                        if self.use_shared_router:
+                            router = _get_shared_router(self.model)
+                            final_resp = await router.acompletion(
+                                model=self.model,
+                                messages=messages,
+                                **final_kwargs
+                            )
+                        else:
+                            final_resp = await litellm.acompletion(
+                                model=self.model,
+                                messages=messages,
+                                **final_kwargs
+                            )
+                        
+                        await self._emit_token_usage(final_resp, step=iteration_count)
+                        content = final_resp.choices[0].message.content or ""
+                        try:
+                            clean_content = content.strip()
+                            if clean_content.startswith("```json"):
+                                clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                            elif clean_content.startswith("```"):
+                                clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                            structured_obj = self.response_schema.model_validate_json(clean_content)
+                        except Exception as e:
+                            if self.debug:
+                                print(f"[DEBUG] Schema validation failed on fallback: {e}")
+                
                 output = AgentOutput(
-                    response=message.content or "",
-                    tool_calls_made=tool_call_count
+                    response=content,
+                    tool_calls_made=tool_call_count,
+                    structured_output=structured_obj,
                 )
                 if self.debug:
                     _print_debug_report(
@@ -318,6 +390,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             if tool_call_count >= self.max_tool_calls:
                 final_kwargs = self.litellm_kwargs.copy()
                 final_kwargs.pop("tool_choice", None)
+                if self.response_schema:
+                    final_kwargs["response_format"] = self.response_schema
 
                 if self.use_shared_router:
                     router = _get_shared_router(self.model)
@@ -336,9 +410,25 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 await self._emit_token_usage(final_response, step=iteration_count)
 
                 termination_reason = f"max_tool_calls ({self.max_tool_calls}) reached → forced final response"
+                
+                content = final_response.choices[0].message.content or ""
+                structured_obj = None
+                if self.response_schema and content:
+                    try:
+                        clean_content = content.strip()
+                        if clean_content.startswith("```json"):
+                            clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                        elif clean_content.startswith("```"):
+                            clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                        structured_obj = self.response_schema.model_validate_json(clean_content)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"[DEBUG] Schema validation failed: {e}")
+
                 output = AgentOutput(
-                    response=final_response.choices[0].message.content or "",
-                    tool_calls_made=tool_call_count
+                    response=content,
+                    tool_calls_made=tool_call_count,
+                    structured_output=structured_obj,
                 )
                 if self.debug:
                     _print_debug_report(
