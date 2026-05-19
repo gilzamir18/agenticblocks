@@ -1,4 +1,5 @@
 import json
+import uuid
 import time
 import inspect
 from collections import defaultdict
@@ -9,6 +10,70 @@ from agenticblocks.core.agent import AgentBlock
 from agenticblocks.core.block import Block
 from agenticblocks.tools.a2a_bridge import block_to_tool_schema
 from agenticblocks.runtime.state import TokenUsage, _current_ctx
+
+
+class _DummyFunction:
+    def __init__(self, name: str, arguments: str):
+        self.name = name
+        self.arguments = arguments
+
+
+class _DummyToolCall:
+    def __init__(self, name: str, arguments: str):
+        self.id = f"call_{uuid.uuid4().hex[:10]}"
+        self.type = "function"
+        self.function = _DummyFunction(name, arguments)
+
+
+class _DummyMessage:
+    def __init__(self, tool_calls: list):
+        self.content = ""
+        self.tool_calls = tool_calls
+
+
+def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
+    """Convert a hallucinated JSON dict into _DummyToolCall objects.
+
+    Handles the formats gemma4 emits when it ignores the function-calling API:
+
+    Format A — explicit wrapper:
+        {"tool_name": "read_file_smart", "tool_args": {"path": "index.html"}}
+        {"tool_name": "edit_file", "arguments": {"path": "f.py", "old_str": "x", "new_str": "y"}}
+
+    Format B — name + params flat:
+        {"name": "read_file_smart", "path": "index.html"}
+
+    Format C — bare params only (tool name inferred from keys):
+        {"path": "style.css"}                               → read_file_smart
+        {"path": "x", "old_str": "a", "new_str": "b"}      → edit_file
+    """
+    tool_name = data.get("tool_name") or data.get("name")
+    raw_args = data.get("tool_args") or data.get("parameters") or data.get("arguments")
+
+    # Format A/B: explicit tool name present
+    if tool_name and tool_name in available_tool_names:
+        if raw_args is None:
+            raw_args = {k: v for k, v in data.items() if k not in {"tool_name", "name"}}
+        if isinstance(raw_args, dict):
+            return [_DummyToolCall(tool_name, json.dumps(raw_args))]
+
+    if tool_name and tool_name not in available_tool_names:
+        return None
+
+    # Format C: infer tool from key shape
+    keys = set(data.keys())
+    if {"path", "old_str", "new_str"} <= keys:
+        return [_DummyToolCall("edit_file", json.dumps({k: data[k] for k in ("path", "old_str", "new_str")}))]
+    if "path" in keys and len(keys) <= 3:
+        return [_DummyToolCall("read_file_smart", json.dumps({k: data[k] for k in keys}))]
+    if "symbol_name" in keys:
+        return [_DummyToolCall("find_symbol", json.dumps({k: data[k] for k in keys}))]
+    if "command" in keys:
+        return [_DummyToolCall("run_command", json.dumps({k: data[k] for k in keys}))]
+    if "message" in keys and len(keys) == 1:
+        return [_DummyToolCall("send_message", json.dumps(data))]
+
+    return None
 
 
 class AgentInput(BaseModel):
@@ -104,85 +169,52 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     model_config = {"arbitrary_types_allowed": True}
 
     def _parse_message(self, message: Any) -> Any:
-        """
-        Hook for subclasses to manipulate the LiteLLM message before it is processed.
-        Useful for intercepting hallucinated JSON tool calls in plain text.
-        """
-        if not getattr(message, "tool_calls", None) and getattr(message, "content", None):
-            try:
-                import json
-                import uuid
-                
-                content_str = message.content.strip()
-                
-                # Extract JSON block if present
-                if "```json" in content_str:
-                    content_str = content_str.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-                elif "```" in content_str:
-                    parts = content_str.split("```", 2)
-                    if len(parts) >= 3:
-                        content_str = parts[1].strip()
-                else:
-                    start_dict = content_str.find("{")
-                    start_list = content_str.find("[")
-                    
-                    if start_dict != -1 and (start_list == -1 or start_dict < start_list):
-                        end_dict = content_str.rfind("}")
-                        if end_dict != -1 and end_dict > start_dict:
-                            content_str = content_str[start_dict:end_dict+1]
-                    elif start_list != -1:
-                        end_list = content_str.rfind("]")
-                        if end_list != -1 and end_list > start_list:
-                            content_str = content_str[start_list:end_list+1]
+        """Recover gemma4 JSON-as-text tool calls when tool_calls is empty."""
+        if getattr(message, "tool_calls", None):
+            return message
 
-                parsed = json.loads(content_str)
-                
-                if isinstance(parsed, dict):
-                    parsed_list = [parsed]
-                elif isinstance(parsed, list):
-                    parsed_list = parsed
-                else:
-                    parsed_list = []
+        content = getattr(message, "content", None)
+        if not content:
+            return message
 
-                tool_calls_to_add = []
-                
-                class _DummyFunction:
-                    def __init__(self, name, arguments):
-                        self.name = name
-                        self.arguments = arguments if isinstance(arguments, str) else json.dumps(arguments)
-                        
-                class _DummyToolCall:
-                    def __init__(self, id, type, function):
-                        self.id = id
-                        self.type = type
-                        self.function = function
+        content_str = content.strip()
 
-                for item in parsed_list:
-                    if isinstance(item, dict):
-                        tool_name = item.get("tool_name") or item.get("name")
-                        arguments = item.get("arguments")
-                        
-                        if tool_name and arguments is not None:
-                            tc = _DummyToolCall(
-                                id=f"call_{uuid.uuid4().hex[:10]}",
-                                type="function",
-                                function=_DummyFunction(
-                                    name=tool_name,
-                                    arguments=arguments
-                                )
-                            )
-                            tool_calls_to_add.append(tc)
-                
-                if tool_calls_to_add:
-                    class _DummyMessage:
-                        def __init__(self, content, tool_calls):
-                            self.content = content
-                            self.tool_calls = tool_calls
-                    return _DummyMessage(content="", tool_calls=tool_calls_to_add)
-            except Exception:
-                pass
-                
-        return message
+        # Strip markdown fences
+        if "```json" in content_str:
+            content_str = content_str.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+        elif content_str.startswith("```"):
+            content_str = content_str.split("```", 2)[1].strip()
+
+        # Extract first JSON object
+        start = content_str.find("{")
+        end = content_str.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return message
+
+        try:
+            data = json.loads(content_str[start:end + 1])
+        except json.JSONDecodeError:
+            return message
+
+        if not isinstance(data, dict):
+            return message
+
+        available = {b.name for b in self.tools}
+        tcs = _json_to_tool_calls(data, available)
+        if not tcs:
+            return message
+
+        # Block send_message when no real tool calls have been made — the model
+        # is hallucinating task completion without having done any actual work.
+        if tcs[0].function.name == "send_message" and getattr(self, "_current_tool_call_count", 0) == 0:
+            if self.debug:
+                print("[DEBUG] _parse_message: blocked send_message — no real tool calls made yet")
+            return message
+
+        if self.debug:
+            print(f"[DEBUG] _parse_message: recovered {tcs[0].function.name}({tcs[0].function.arguments[:120]})")
+
+        return _DummyMessage(tcs)
 
     async def _emit_token_usage(self, response: Any, step: int) -> None:
         """
@@ -227,6 +259,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         ]
 
         tool_call_count = 0
+        self._current_tool_call_count = 0
         iteration_count = 0
         last_response: str = ""
         tool_usage: Dict[str, int] = defaultdict(int)
@@ -421,6 +454,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             # Transparent Execution (A2A and MCP).
             for tool_call in message.tool_calls:
                 tool_call_count += 1
+                self._current_tool_call_count = tool_call_count
                 function_name = tool_call.function.name
                 tool_usage[function_name] += 1
 
