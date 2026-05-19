@@ -47,7 +47,7 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
         {"path": "style.css"}                               → read_file_smart
         {"path": "x", "old_str": "a", "new_str": "b"}      → edit_file
     """
-    tool_name = data.get("tool_name") or data.get("name")
+    tool_name = data.get("tool_name") or data.get("name") or data.get("function")
     raw_args = data.get("tool_args") or data.get("parameters") or data.get("arguments")
 
     # Format A/B: explicit tool name present
