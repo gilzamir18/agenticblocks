@@ -108,6 +108,80 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         Hook for subclasses to manipulate the LiteLLM message before it is processed.
         Useful for intercepting hallucinated JSON tool calls in plain text.
         """
+        if not getattr(message, "tool_calls", None) and getattr(message, "content", None):
+            try:
+                import json
+                import uuid
+                
+                content_str = message.content.strip()
+                
+                # Extract JSON block if present
+                if "```json" in content_str:
+                    content_str = content_str.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                elif "```" in content_str:
+                    parts = content_str.split("```", 2)
+                    if len(parts) >= 3:
+                        content_str = parts[1].strip()
+                else:
+                    start_dict = content_str.find("{")
+                    start_list = content_str.find("[")
+                    
+                    if start_dict != -1 and (start_list == -1 or start_dict < start_list):
+                        end_dict = content_str.rfind("}")
+                        if end_dict != -1 and end_dict > start_dict:
+                            content_str = content_str[start_dict:end_dict+1]
+                    elif start_list != -1:
+                        end_list = content_str.rfind("]")
+                        if end_list != -1 and end_list > start_list:
+                            content_str = content_str[start_list:end_list+1]
+
+                parsed = json.loads(content_str)
+                
+                if isinstance(parsed, dict):
+                    parsed_list = [parsed]
+                elif isinstance(parsed, list):
+                    parsed_list = parsed
+                else:
+                    parsed_list = []
+
+                tool_calls_to_add = []
+                
+                class _DummyFunction:
+                    def __init__(self, name, arguments):
+                        self.name = name
+                        self.arguments = arguments if isinstance(arguments, str) else json.dumps(arguments)
+                        
+                class _DummyToolCall:
+                    def __init__(self, id, type, function):
+                        self.id = id
+                        self.type = type
+                        self.function = function
+
+                for item in parsed_list:
+                    if isinstance(item, dict):
+                        tool_name = item.get("tool_name") or item.get("name")
+                        arguments = item.get("arguments")
+                        
+                        if tool_name and arguments is not None:
+                            tc = _DummyToolCall(
+                                id=f"call_{uuid.uuid4().hex[:10]}",
+                                type="function",
+                                function=_DummyFunction(
+                                    name=tool_name,
+                                    arguments=arguments
+                                )
+                            )
+                            tool_calls_to_add.append(tc)
+                
+                if tool_calls_to_add:
+                    class _DummyMessage:
+                        def __init__(self, content, tool_calls):
+                            self.content = content
+                            self.tool_calls = tool_calls
+                    return _DummyMessage(content="", tool_calls=tool_calls_to_add)
+            except Exception:
+                pass
+                
         return message
 
     async def _emit_token_usage(self, response: Any, step: int) -> None:
