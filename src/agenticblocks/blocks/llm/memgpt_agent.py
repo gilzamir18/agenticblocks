@@ -2,7 +2,7 @@ import json
 import time
 import inspect
 from collections import defaultdict
-from pydantic import Field
+from pydantic import Field, BaseModel
 from typing import List, Dict, Any, Optional
 import litellm
 
@@ -25,7 +25,7 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
        via the `send_message` tool, or if the `max_heartbeats` limit is reached.
     """
     description: str = "MemGPT style Agent with strict heartbeat limits and context management."
-    model: str = "gpt-4o-mini"
+    model: str = "ollama/gemma4:latest"
     system_prompt: str = "You are a helpful AI assistant with extended memory capabilities."
     tools: List[Block] = []
     max_heartbeats: int = 10
@@ -33,6 +33,8 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     eviction_threshold: float = 1.0
     memory_pressure_threshold: float = 0.7
     tool_call_limits: Dict[str, int] = Field(default_factory=dict)
+    response_schema: Optional[type[BaseModel]] = None
+    """Optional Pydantic model class to enforce a structured response schema."""
     debug: bool = False
     use_shared_router: bool = True
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
@@ -389,7 +391,60 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 break
 
         final_text = "\n".join(accumulated_responses)
-        output = AgentOutput(response=final_text, tool_calls_made=tool_call_count)
+        structured_obj = None
+
+        if self.response_schema and final_text:
+            try:
+                clean_content = final_text.strip()
+                if clean_content.startswith("```json"):
+                    clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                elif clean_content.startswith("```"):
+                    clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                structured_obj = self.response_schema.model_validate_json(clean_content)
+            except Exception:
+                # Fallback synthesis formatting call to force-convert conversations into the schema format
+                final_kwargs = self.litellm_kwargs.copy()
+                final_kwargs.pop("tools", None)
+                final_kwargs.pop("tool_choice", None)
+                final_kwargs["response_format"] = self.response_schema
+                
+                format_msg = {"role": "system", "content": "Format all the accumulated context into the required structured JSON output schema."}
+                format_messages = messages + [format_msg]
+
+                try:
+                    if self.use_shared_router:
+                        router = _get_shared_router(self.model)
+                        final_resp = await router.acompletion(
+                            model=self.model,
+                            messages=format_messages,
+                            **final_kwargs
+                        )
+                    else:
+                        final_resp = await litellm.acompletion(
+                            model=self.model,
+                            messages=format_messages,
+                            **final_kwargs
+                        )
+                    
+                    await self._emit_token_usage(final_resp, step=heartbeats_used)
+                    content = final_resp.choices[0].message.content or ""
+                    
+                    clean_content = content.strip()
+                    if clean_content.startswith("```json"):
+                        clean_content = clean_content.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+                    elif clean_content.startswith("```"):
+                        clean_content = clean_content.split("```", 1)[1].rsplit("```", 1)[0].strip()
+                    structured_obj = self.response_schema.model_validate_json(clean_content)
+                    final_text = content
+                except Exception as e:
+                    if self.debug:
+                        print(f"[DEBUG] Schema validation failed on fallback: {e}")
+
+        output = AgentOutput(
+            response=final_text,
+            tool_calls_made=tool_call_count,
+            structured_output=structured_obj
+        )
 
         if self.debug:
             _print_debug_report(
