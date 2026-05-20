@@ -46,8 +46,23 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
     Format C — bare params only (tool name inferred from keys):
         {"path": "style.css"}                               → read_file_smart
         {"path": "x", "old_str": "a", "new_str": "b"}      → edit_file
+
+    Format D — tool_calls list wrapper (gemma4 OpenAI-style hallucination):
+        {"tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "x.js"}}}]}
+        {"tool_calls": [{"name": "read_file", "arguments": {"path": "x.js"}}]}
     """
-    tool_name = data.get("tool_name") or data.get("name") or data.get("function") or data.get("tool_calls")
+    # Format D: tool_calls wrapper — unpack first item and recurse
+    tool_calls_list = data.get("tool_calls")
+    if isinstance(tool_calls_list, list) and tool_calls_list:
+        first = tool_calls_list[0]
+        if isinstance(first, dict):
+            # {"function": {"name": ..., "arguments": ...}} or {"name": ..., "arguments": ...}
+            inner = first.get("function") or first
+            if isinstance(inner, dict):
+                return _json_to_tool_calls(inner, available_tool_names)
+        return None
+
+    tool_name = data.get("tool_name") or data.get("name") or data.get("function")
     raw_args = data.get("tool_args") or data.get("parameters") or data.get("arguments")
 
     # Format A/B: explicit tool name present
@@ -137,6 +152,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     model: str = "ollama/gemma4:latest"
     system_prompt: str = "You are a helpful Analyst and Router Agent. Use the available tools when you lack context."
     tools: List[Block] = []
+    termination_tools: List[str] = []
+    """List of tool names that, when executed, will immediately terminate the agent loop
+    and return the tool's result as the agent's response."""
     max_iterations: Optional[int] = None
     max_tool_calls: int = 2
     on_max_iterations: str = "return_last"
@@ -194,6 +212,15 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         try:
             data = json.loads(content_str[start:end + 1])
         except json.JSONDecodeError:
+            # Likely a truncated tool call (e.g. write_file with large content).
+            # Inject an error so the loop continues and the model retries via the API.
+            _TOOL_CALL_KEYS = {'"tool_name"', '"name"', '"function"', '"tool_calls"'}
+            if any(k in content_str for k in _TOOL_CALL_KEYS):
+                message.content = (
+                    "[TRUNCATED RESPONSE] Your previous response was cut off mid-JSON. "
+                    "Do NOT write file contents inline as JSON text — they are too large. "
+                    "Call the write_file tool directly using the function-calling API."
+                )
             return message
 
         if not isinstance(data, dict):
@@ -461,12 +488,29 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 # Look for the matching native tool (connected blocks).
                 matched_block = next((b for b in self.tools if b.name == function_name), None)
                 if not matched_block:
+                    tool_result_content = json.dumps({"error": f"Tool '{function_name}' not found."})
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": f"Tool '{function_name}' not found."})
+                        "content": tool_result_content
                     })
+                    if function_name in self.termination_tools:
+                        termination_reason = f"termination tool '{function_name}' not found"
+                        if self.debug:
+                            _print_debug_report(
+                                agent_name=self.name,
+                                model=self.model,
+                                iteration_count=iteration_count,
+                                tool_call_count=tool_call_count,
+                                tool_usage=dict(tool_usage),
+                                termination_reason=termination_reason,
+                                elapsed_seconds=time.monotonic() - start_time,
+                            )
+                        return AgentOutput(
+                            response=tool_result_content,
+                            tool_calls_made=tool_call_count,
+                        )
                     continue
 
                 try:
@@ -478,19 +522,38 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     result = await matched_block.run(input=input_model)
 
                     # The typed output is serialised back to JSON for LiteLLM's history.
+                    tool_result_content = json.dumps(result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps(result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result)
+                        "content": tool_result_content
                     })
                 except Exception as e:
+                    tool_result_content = json.dumps({"error": str(e)})
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": function_name,
-                        "content": json.dumps({"error": str(e)})
+                        "content": tool_result_content
                     })
+
+                if function_name in self.termination_tools:
+                    termination_reason = f"termination tool '{function_name}' executed"
+                    if self.debug:
+                        _print_debug_report(
+                            agent_name=self.name,
+                            model=self.model,
+                            iteration_count=iteration_count,
+                            tool_call_count=tool_call_count,
+                            tool_usage=dict(tool_usage),
+                            termination_reason=termination_reason,
+                            elapsed_seconds=time.monotonic() - start_time,
+                        )
+                    return AgentOutput(
+                        response=tool_result_content,
+                        tool_calls_made=tool_call_count,
+                    )
 
             # If the tool-call limit was reached, force a final response without tools.
             # This is necessary because some models (e.g. Ollama) ignore

@@ -180,3 +180,32 @@ class TestLLMAgentBlock(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.tool_calls_made, 1)
         self.assertEqual(output.response, "I executed DummyTool, output was: Processed: Hello Block")
         self.assertEqual(mock_acompletion.call_count, 2)
+
+    @patch("agenticblocks.blocks.llm.agent.litellm.acompletion")
+    async def test_termination_tools_execution(self, mock_acompletion):
+        """Test LLMAgentBlock termination when executing a tool listed in termination_tools."""
+        tool = DummyToolBlock()
+        agent = LLMAgentBlock(
+            name="TerminationAgent",
+            model="ollama/gemma4:latest",
+            tools=[tool],
+            termination_tools=["DummyTool"],
+            max_tool_calls=1
+        )
+        
+        # Iteration 1: LLM returns a tool call to DummyTool
+        tool_arguments = json.dumps({"query": "Hello Block"})
+        mock_tool_call = MockToolCall(call_id="call_abc123", name="DummyTool", arguments=tool_arguments)
+        
+        mock_acompletion.side_effect = [
+            MockResponse(content=None, tool_calls=[mock_tool_call])
+        ]
+        
+        output = await agent.run(AgentInput(prompt="Run DummyTool"))
+        
+        # The agent should stop immediately after the tool execution and return the tool output
+        self.assertEqual(output.tool_calls_made, 1)
+        expected_tool_output = json.dumps({"result": "Processed: Hello Block"})
+        self.assertEqual(output.response, expected_tool_output)
+        self.assertEqual(mock_acompletion.call_count, 1)
+
