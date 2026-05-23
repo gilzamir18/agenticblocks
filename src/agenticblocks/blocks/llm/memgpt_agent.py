@@ -35,6 +35,10 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     tool_call_limits: Dict[str, int] = Field(default_factory=dict)
     response_schema: Optional[type[BaseModel]] = None
     """Optional Pydantic model class to enforce a structured response schema."""
+    response_mode: str = "all"
+    """Controls which send_message calls appear in the final output.
+    'all'  — concatenate every send_message call (default, original behaviour).
+    'last' — return only the final send_message call, discarding intermediate ones."""
     debug: bool = False
     use_shared_router: bool = True
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
@@ -390,7 +394,10 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 termination_reason = f"max_heartbeats ({self.max_heartbeats}) reached"
                 break
 
-        final_text = "\n".join(accumulated_responses)
+        if self.response_mode == "last":
+            final_text = accumulated_responses[-1] if accumulated_responses else ""
+        else:
+            final_text = "\n".join(accumulated_responses)
         structured_obj = None
 
         if self.response_schema and final_text:
