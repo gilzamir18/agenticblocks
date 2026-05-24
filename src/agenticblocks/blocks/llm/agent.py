@@ -60,6 +60,12 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
             inner = first.get("function") or first
             if isinstance(inner, dict):
                 return _json_to_tool_calls(inner, available_tool_names)
+            # Format D variant: {"function": "<name>", "args"/"arguments": {...}}
+            # gemma4 emits "function" as a plain string instead of a nested dict.
+            if isinstance(inner, str) and inner in available_tool_names:
+                raw = first.get("args") or first.get("arguments") or first.get("parameters") or {}
+                if isinstance(raw, dict):
+                    return [_DummyToolCall(inner, json.dumps(raw))]
         return None
 
     tool_name = data.get("tool_name") or data.get("name") or data.get("function")
