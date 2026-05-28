@@ -51,6 +51,27 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
         {"tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "x.js"}}}]}
         {"tool_calls": [{"name": "read_file", "arguments": {"path": "x.js"}}]}
     """
+    # Format E — fs_operations list (gemma4 file-edit hallucination):
+    #   {"fs_operations": [{"type": "edit_file", "path": "x", "old_str": "a", "new_str": "b", "line": 36}]}
+    fs_ops = data.get("fs_operations")
+    if isinstance(fs_ops, list) and fs_ops:
+        results = []
+        for op in fs_ops:
+            if not isinstance(op, dict):
+                continue
+            op_type = op.get("type", "")
+            if op_type == "edit_file" and "path" in op and "old_str" in op and "new_str" in op:
+                args = {k: op[k] for k in ("path", "old_str", "new_str") if k in op}
+                if "line" in op:
+                    args["line"] = op["line"]
+                results.append(_DummyToolCall("edit_file", json.dumps(args)))
+            elif op_type in ("write_file", "create_file") and "path" in op and "content" in op:
+                results.append(_DummyToolCall("write_file", json.dumps({"path": op["path"], "content": op["content"]})))
+            elif op_type == "read_file" and "path" in op:
+                results.append(_DummyToolCall("read_file", json.dumps({"path": op["path"]})))
+        if results:
+            return results
+
     # Format D: tool_calls wrapper — unpack first item and recurse
     tool_calls_list = data.get("tool_calls")
     if isinstance(tool_calls_list, list) and tool_calls_list:
@@ -68,7 +89,12 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
                     return [_DummyToolCall(inner, json.dumps(raw))]
         return None
 
-    tool_name = data.get("tool_name") or data.get("name") or data.get("function")
+    tool_name = data.get("tool_name") or data.get("name") or data.get("function") or data.get("function_name")
+    # "function" can be a dict (e.g. {"name": "edit_file", "arguments": {...}}) when the
+    # model emits OpenAI-style tool_calls without the outer wrapper. If so, recurse into it
+    # rather than using the dict as a tool name — which would raise TypeError on set lookup.
+    if isinstance(tool_name, dict):
+        return _json_to_tool_calls(tool_name, available_tool_names)
     raw_args = data.get("tool_args") or data.get("parameters") or data.get("arguments")
 
     # Format A/B: explicit tool name present

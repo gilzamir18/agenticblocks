@@ -4,8 +4,48 @@ from unittest.mock import AsyncMock, patch
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 
-from agenticblocks.blocks.llm.agent import LLMAgentBlock, AgentInput, AgentOutput
+from agenticblocks.blocks.llm.agent import LLMAgentBlock, AgentInput, AgentOutput, _json_to_tool_calls
 from agenticblocks.core.block import Block
+
+
+class TestJsonToToolCalls(unittest.TestCase):
+    """Unit tests for _json_to_tool_calls — the hallucinated-JSON parser."""
+
+    AVAILABLE = {"edit_file", "read_file", "write_file", "send_message"}
+
+    def test_format_a_explicit_tool_name(self):
+        data = {"tool_name": "edit_file", "tool_args": {"path": "f.py", "old_str": "a", "new_str": "b"}}
+        result = _json_to_tool_calls(data, self.AVAILABLE)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].function.name, "edit_file")
+
+    def test_format_b_name_key(self):
+        data = {"name": "read_file", "path": "index.html"}
+        result = _json_to_tool_calls(data, self.AVAILABLE)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].function.name, "read_file")
+
+    def test_format_d_tool_calls_wrapper(self):
+        data = {"tool_calls": [{"function": {"name": "write_file", "arguments": {"path": "x.py", "content": ""}}}]}
+        result = _json_to_tool_calls(data, self.AVAILABLE)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].function.name, "write_file")
+
+    def test_function_key_as_dict_does_not_raise(self):
+        # Regression: model emits "function" as a dict instead of a string.
+        # Previously caused TypeError: cannot use 'dict' as a set element.
+        data = {"function": {"name": "edit_file", "arguments": {"path": "f.py", "old_str": "x", "new_str": "y"}}}
+        try:
+            result = _json_to_tool_calls(data, self.AVAILABLE)
+        except TypeError as e:
+            self.fail(f"_json_to_tool_calls raised TypeError with dict 'function': {e}")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].function.name, "edit_file")
+
+    def test_unknown_tool_name_returns_none(self):
+        data = {"name": "nonexistent_tool", "path": "x.py"}
+        result = _json_to_tool_calls(data, self.AVAILABLE)
+        self.assertIsNone(result)
 
 # Define some dummy schemas for testing
 class UserSchema(BaseModel):
