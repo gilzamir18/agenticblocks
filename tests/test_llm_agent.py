@@ -11,7 +11,13 @@ from agenticblocks.core.block import Block
 class TestJsonToToolCalls(unittest.TestCase):
     """Unit tests for _json_to_tool_calls — the hallucinated-JSON parser."""
 
-    AVAILABLE = {"edit_file", "read_file", "write_file", "send_message"}
+    # tool_name -> (all_params, required_params), mirroring what _parse_message builds.
+    AVAILABLE = {
+        "edit_file": ({"path", "old_str", "new_str"}, {"path", "old_str", "new_str"}),
+        "read_file": ({"path"}, {"path"}),
+        "write_file": ({"path", "content"}, {"path", "content"}),
+        "send_message": ({"message"}, {"message"}),
+    }
 
     def test_format_a_explicit_tool_name(self):
         data = {"tool_name": "edit_file", "tool_args": {"path": "f.py", "old_str": "a", "new_str": "b"}}

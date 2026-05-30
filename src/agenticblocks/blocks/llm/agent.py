@@ -31,28 +31,52 @@ class _DummyMessage:
         self.tool_calls = tool_calls
 
 
-def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
+def _infer_tool_from_keys(keys: set, available_tools: dict) -> str | None:
+    """Infer which registered tool a bare param dict targets, from its key shape.
+
+    A tool is a candidate when the provided `keys` are a subset of its declared
+    parameters AND all of that tool's required parameters are present. The match is
+    only accepted when EXACTLY ONE tool qualifies — zero or multiple candidates
+    return None, so the caller never invents a tool name on ambiguity.
+
+    `available_tools` maps tool_name -> (all_params, required_params).
+    """
+    candidates = [
+        name
+        for name, (params, required) in available_tools.items()
+        if keys <= params and required <= keys
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _json_to_tool_calls(data: dict, available_tools: dict) -> list | None:
     """Convert a hallucinated JSON dict into _DummyToolCall objects.
 
-    Handles the formats gemma4 emits when it ignores the function-calling API:
+    Handles the formats a model emits when it ignores the function-calling API.
+    All tool names are validated against `available_tools` (the tools actually
+    registered on the block) — names are never hardcoded, and key-shape inference
+    (Formats C/E) maps onto the real tools' parameter schemas.
+
+    `available_tools` maps tool_name -> (all_params: set, required_params: set).
 
     Format A — explicit wrapper:
-        {"tool_name": "read_file_smart", "tool_args": {"path": "index.html"}}
-        {"tool_name": "edit_file", "arguments": {"path": "f.py", "old_str": "x", "new_str": "y"}}
+        {"tool_name": "read_file", "tool_args": {"file_path": "index.html"}}
 
     Format B — name + params flat:
-        {"name": "read_file_smart", "path": "index.html"}
+        {"name": "read_file", "file_path": "index.html"}
 
-    Format C — bare params only (tool name inferred from keys):
-        {"path": "style.css"}                               → read_file_smart
-        {"path": "x", "old_str": "a", "new_str": "b"}      → edit_file
+    Format C — bare params only (tool inferred from the registered tools' schemas):
+        {"file_path": "style.css"}   → whichever single tool declares "file_path"
 
-    Format D — tool_calls list wrapper (gemma4 OpenAI-style hallucination):
-        {"tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "x.js"}}}]}
-        {"tool_calls": [{"name": "read_file", "arguments": {"path": "x.js"}}]}
+    Format D — tool_calls list wrapper (OpenAI-style hallucination):
+        {"tool_calls": [{"function": {"name": "read_file", "arguments": {"file_path": "x.js"}}}]}
+        {"tool_calls": [{"name": "read_file", "arguments": {"file_path": "x.js"}}]}
+
+    Format E — fs_operations list, where each op's "type" names a registered tool.
     """
-    # Format E — fs_operations list (gemma4 file-edit hallucination):
-    #   {"fs_operations": [{"type": "edit_file", "path": "x", "old_str": "a", "new_str": "b", "line": 36}]}
+    available_names = set(available_tools.keys())
+
+    # Format E — fs_operations list: each op's "type" must name a registered tool.
     fs_ops = data.get("fs_operations")
     if isinstance(fs_ops, list) and fs_ops:
         results = []
@@ -60,15 +84,12 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
             if not isinstance(op, dict):
                 continue
             op_type = op.get("type", "")
-            if op_type == "edit_file" and "path" in op and "old_str" in op and "new_str" in op:
-                args = {k: op[k] for k in ("path", "old_str", "new_str") if k in op}
-                if "line" in op:
-                    args["line"] = op["line"]
-                results.append(_DummyToolCall("edit_file", json.dumps(args)))
-            elif op_type in ("write_file", "create_file") and "path" in op and "content" in op:
-                results.append(_DummyToolCall("write_file", json.dumps({"path": op["path"], "content": op["content"]})))
-            elif op_type == "read_file" and "path" in op:
-                results.append(_DummyToolCall("read_file", json.dumps({"path": op["path"]})))
+            if op_type not in available_names:
+                continue
+            params, _required = available_tools[op_type]
+            args = {k: v for k, v in op.items() if k != "type" and k in params}
+            if args:
+                results.append(_DummyToolCall(op_type, json.dumps(args)))
         if results:
             return results
 
@@ -80,10 +101,10 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
             # {"function": {"name": ..., "arguments": ...}} or {"name": ..., "arguments": ...}
             inner = first.get("function") or first
             if isinstance(inner, dict):
-                return _json_to_tool_calls(inner, available_tool_names)
+                return _json_to_tool_calls(inner, available_tools)
             # Format D variant: {"function": "<name>", "args"/"arguments": {...}}
-            # gemma4 emits "function" as a plain string instead of a nested dict.
-            if isinstance(inner, str) and inner in available_tool_names:
+            # the model emits "function" as a plain string instead of a nested dict.
+            if isinstance(inner, str) and inner in available_names:
                 raw = first.get("args") or first.get("arguments") or first.get("parameters") or {}
                 if isinstance(raw, dict):
                     return [_DummyToolCall(inner, json.dumps(raw))]
@@ -94,31 +115,25 @@ def _json_to_tool_calls(data: dict, available_tool_names: set) -> list | None:
     # model emits OpenAI-style tool_calls without the outer wrapper. If so, recurse into it
     # rather than using the dict as a tool name — which would raise TypeError on set lookup.
     if isinstance(tool_name, dict):
-        return _json_to_tool_calls(tool_name, available_tool_names)
+        return _json_to_tool_calls(tool_name, available_tools)
     raw_args = data.get("tool_args") or data.get("parameters") or data.get("arguments")
 
     # Format A/B: explicit tool name present
-    if tool_name and tool_name in available_tool_names:
+    if tool_name and tool_name in available_names:
         if raw_args is None:
             raw_args = {k: v for k, v in data.items() if k not in {"tool_name", "name"}}
         if isinstance(raw_args, dict):
             return [_DummyToolCall(tool_name, json.dumps(raw_args))]
 
-    if tool_name and tool_name not in available_tool_names:
+    if tool_name and tool_name not in available_names:
         return None
 
-    # Format C: infer tool from key shape
+    # Format C: infer the target tool from the bare-param key shape, matched
+    # against the registered tools' schemas. Accepted only on a unique match.
     keys = set(data.keys())
-    if {"path", "old_str", "new_str"} <= keys:
-        return [_DummyToolCall("edit_file", json.dumps({k: data[k] for k in ("path", "old_str", "new_str")}))]
-    if "path" in keys and len(keys) <= 3:
-        return [_DummyToolCall("read_file_smart", json.dumps({k: data[k] for k in keys}))]
-    if "symbol_name" in keys:
-        return [_DummyToolCall("find_symbol", json.dumps({k: data[k] for k in keys}))]
-    if "command" in keys:
-        return [_DummyToolCall("run_command", json.dumps({k: data[k] for k in keys}))]
-    if "message" in keys and len(keys) == 1:
-        return [_DummyToolCall("send_message", json.dumps(data))]
+    inferred = _infer_tool_from_keys(keys, available_tools)
+    if inferred is not None:
+        return [_DummyToolCall(inferred, json.dumps(data))]
 
     return None
 
@@ -258,7 +273,12 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         if not isinstance(data, dict):
             return message
 
-        available = {b.name for b in self.tools}
+        available = {}
+        for b in self.tools:
+            schema = b.input_schema().model_json_schema()
+            params = set(schema.get("properties", {}).keys())
+            required = set(schema.get("required", []))
+            available[b.name] = (params, required)
         tcs = _json_to_tool_calls(data, available)
         if not tcs:
             return message
