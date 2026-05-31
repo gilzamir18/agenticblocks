@@ -7,7 +7,10 @@ from typing import List, Dict, Any, Optional
 import litellm
 
 from agenticblocks.core.agent import AgentBlock
-from agenticblocks.blocks.llm.agent import AgentInput, AgentOutput, _get_shared_router, _print_debug_report
+from agenticblocks.blocks.llm.agent import (
+    AgentInput, AgentOutput, _get_shared_router, _print_debug_report,
+    _json_to_tool_calls,
+)
 from agenticblocks.tools.a2a_bridge import block_to_tool_schema
 from agenticblocks.core.block import Block
 from agenticblocks.core.function_block import as_tool
@@ -134,6 +137,55 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 """
         return self.system_prompt + memgpt_rules
 
+    def _recover_tool_call_from_text(self, content: Optional[str], agent_tools: List[Block]) -> Any:
+        """Recover a tool call a model emitted as plain-text JSON (no native API).
+
+        Returns a single tool-call object (with .id / .function.name /
+        .function.arguments) or None. Delegates the shape handling to the shared
+        ``_json_to_tool_calls`` parser, which validates every tool name against the
+        tools actually registered on this block — so a hallucinated/unknown name is
+        rejected rather than invented.
+        """
+        if not content:
+            return None
+        content_str = content.strip()
+
+        # Strip markdown fences if the model wrapped the JSON.
+        if "```json" in content_str:
+            content_str = content_str.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+        elif content_str.startswith("```"):
+            parts = content_str.split("```")
+            content_str = parts[1].strip() if len(parts) > 1 else content_str
+
+        start = content_str.find("{")
+        end = content_str.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(content_str[start:end + 1], strict=False)
+        except Exception:
+            try:
+                heuristic = content_str[start:end + 1].replace('\\"', '"').replace('\\n', '\n')
+                data = json.loads(heuristic, strict=False)
+            except Exception:
+                return None
+        if not isinstance(data, dict):
+            return None
+
+        # Build the tool map the parser expects: name -> (all_params, required).
+        available: Dict[str, tuple] = {}
+        for b in agent_tools:
+            try:
+                schema = b.input_schema().model_json_schema()
+            except Exception:
+                continue
+            params = set(schema.get("properties", {}).keys())
+            required = set(schema.get("required", []))
+            available[b.name] = (params, required)
+
+        tcs = _json_to_tool_calls(data, available)
+        return tcs[0] if tcs else None
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
@@ -232,59 +284,14 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             messages.append(assistant_msg_raw)
 
             if not message.tool_calls:
-                parsed_tc = None
-                if message.content:
-                    content_str = message.content.strip()
-                    
-                    import re
-                    json_match = re.search(r'(\{.*\})', content_str, re.DOTALL)
-                    if json_match:
-                        clean_json_str = json_match.group(1)
-                        parsed_json = None
-                        try:
-                            # Primeiro tenta parsear o JSON com strict=False para tolerar quebras de linha literais
-                            parsed_json = json.loads(clean_json_str, strict=False)
-                        except Exception:
-                            try:
-                                # Fallback: se houver escapes excessivos, tenta limpar
-                                heuristic_str = clean_json_str.replace('\\"', '"').replace('\\n', '\n')
-                                parsed_json = json.loads(heuristic_str, strict=False)
-                            except Exception as e:
-                                if self.debug:
-                                    print(f"[DEBUG PARSE FALLBACK ERRO] Falha no fallback. Erro: {e}. Content original: {content_str}")
-                                pass
-
-                        try:
-                            if parsed_json and isinstance(parsed_json, dict):
-                                fn_name = parsed_json.get("function") or parsed_json.get("name")
-                                args = parsed_json.get("arguments") or parsed_json.get("parameters") or {}
-                                
-                                # Se args já for uma string (comum se for duplo escape), converte pra dict
-                                if isinstance(args, str):
-                                    try:
-                                        args = json.loads(args, strict=False)
-                                    except:
-                                        pass
-                                
-                                if fn_name and isinstance(fn_name, str):
-                                    class MockFunction:
-                                        def __init__(self, name, arguments):
-                                            self.name = name
-                                            self.arguments = arguments
-                                    class MockToolCall:
-                                        def __init__(self, id, function):
-                                            self.id = id
-                                            self.function = function
-                                            
-                                    parsed_tc = MockToolCall(
-                                        id=f"call_{int(time.time())}",
-                                        function=MockFunction(
-                                            name=fn_name,
-                                            arguments=json.dumps(args) if isinstance(args, dict) else str(args)
-                                        )
-                                    )
-                        except Exception:
-                            pass
+                # Some models (notably small local ones) stop using the native
+                # tool-calling API after a few turns and emit the call as plain-text
+                # JSON instead — in several shapes (flat, nested function dict, an
+                # OpenAI-style {"tool_calls": [...]} wrapper, bare params, etc.).
+                # Reuse the shared, well-tested recovery parser (_json_to_tool_calls)
+                # rather than a bespoke inline one: it validates names against the
+                # tools actually registered on this block, so it never invents a tool.
+                parsed_tc = self._recover_tool_call_from_text(message.content, agent_tools)
 
                 if parsed_tc:
                     message.tool_calls = [parsed_tc]
@@ -299,7 +306,17 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                         err_msg = "SYSTEM ALERT: You violated the tool-only rule. You MUST NOT reply with plain text. Use the `send_message` tool to talk to the user."
                         if message.content.strip().startswith("{"):
                             err_msg = "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. You MUST use the proper tool calling API (like send_message)."
-                        
+                            # Neutralize the malformed assistant message in history so the
+                            # model does not see its own bad output and imitate it on the
+                            # next iteration (a self-reinforcing text-JSON loop that would
+                            # otherwise burn heartbeats until the turn returns empty).
+                            _neutralized = {
+                                "role": "assistant",
+                                "content": "(removed: malformed tool call — use the native tool-calling API)",
+                            }
+                            self.internal_history[-1] = _neutralized
+                            messages[-1] = _neutralized
+
                         alert_msg = {"role": "user", "content": err_msg}
                         self.internal_history.append(alert_msg)
                         messages.append(alert_msg)

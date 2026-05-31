@@ -121,3 +121,94 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.structured_output.age, 25)
         # Should take 2 calls: one for the heartbeat iteration, one for the final schema formatting fallback
         self.assertEqual(mock_acompletion.call_count, 2)
+
+
+from agenticblocks.core.function_block import as_tool
+
+
+@as_tool(name="run_skill", description="Run a skill.")
+def _run_skill(skill_name: str, context: str, intent: str = "newfeat") -> str:
+    return "ok"
+
+
+class TestMemGPTTextToolCallRecovery(unittest.TestCase):
+    """Recover tool calls a model emits as plain-text JSON (no native API).
+
+    Small local models (e.g. gemma4) stop using the function-calling API after a
+    few turns and emit the call as text JSON in several shapes. The MemGPT block
+    must recover these via the shared parser and validate names against its tools.
+    """
+
+    def _agent(self):
+        return MemGPTAgentBlock(
+            name="rec", model="ollama/gemma4:latest",
+            tools=[_run_skill], use_shared_router=False, debug=False,
+        )
+
+    def _agent_tools(self, agent):
+        # Mirror run(): the live tool set includes send_message.
+        @as_tool(name="send_message", description="Talk to the user.")
+        def send_message(message: str, request_heartbeat: bool = False) -> str:
+            return "ok"
+        return list(agent.tools) + [send_message]
+
+    def test_recovers_nested_openai_tool_calls_shape(self):
+        """The exact shape gemma4 emits: {"tool_calls":[{"function":{name,arguments}}]}."""
+        agent = self._agent()
+        content = json.dumps({
+            "tool_calls": [{
+                "id": "call_x",
+                "function": {
+                    "name": "run_skill",
+                    "arguments": {
+                        "skill_name": "implement-feature",
+                        "context": "Add subtract(a,b) to calc.py",
+                        "intent": "newfeat",
+                    },
+                },
+            }],
+        })
+        tc = agent._recover_tool_call_from_text(content, self._agent_tools(agent))
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.function.name, "run_skill")
+        args = json.loads(tc.function.arguments)
+        self.assertEqual(args["skill_name"], "implement-feature")
+        self.assertEqual(args["intent"], "newfeat")
+
+    def test_recovers_flat_shape(self):
+        agent = self._agent()
+        content = json.dumps({
+            "function": "send_message",
+            "arguments": {"message": "done"},
+        })
+        tc = agent._recover_tool_call_from_text(content, self._agent_tools(agent))
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.function.name, "send_message")
+
+    def test_unknown_tool_name_is_rejected(self):
+        """Names not registered on the block must never be invented."""
+        agent = self._agent()
+        content = json.dumps({
+            "tool_calls": [{"function": {"name": "delete_everything", "arguments": {}}}],
+        })
+        tc = agent._recover_tool_call_from_text(content, self._agent_tools(agent))
+        self.assertIsNone(tc)
+
+    def test_plain_text_is_not_a_tool_call(self):
+        agent = self._agent()
+        self.assertIsNone(agent._recover_tool_call_from_text("Just a sentence.", self._agent_tools(agent)))
+        self.assertIsNone(agent._recover_tool_call_from_text(None, self._agent_tools(agent)))
+
+    def test_markdown_fenced_json_is_recovered(self):
+        agent = self._agent()
+        content = "```json\n" + json.dumps({
+            "tool_calls": [{"function": {"name": "run_skill",
+                                          "arguments": {"skill_name": "x", "context": "y"}}}],
+        }) + "\n```"
+        tc = agent._recover_tool_call_from_text(content, self._agent_tools(agent))
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.function.name, "run_skill")
+
+
+if __name__ == "__main__":
+    unittest.main()
