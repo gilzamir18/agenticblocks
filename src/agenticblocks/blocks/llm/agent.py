@@ -233,6 +233,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
     model_config = {"arbitrary_types_allowed": True}
 
+    async def _invoke_on_iteration(self, iteration: int, messages: List[Dict[str, Any]]) -> None:
+        if self.on_iteration:
+            if inspect.iscoroutinefunction(self.on_iteration):
+                await self.on_iteration(iteration, messages)
+            else:
+                self.on_iteration(iteration, messages)
+
     def _parse_message(self, message: Any) -> Any:
         """Recover gemma4 JSON-as-text tool calls when tool_calls is empty."""
         if getattr(message, "tool_calls", None):
@@ -345,11 +352,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         termination_reason: str = "unknown"
 
         while True:
-            if self.on_iteration:
-                if inspect.iscoroutinefunction(self.on_iteration):
-                    await self.on_iteration(iteration_count, messages)
-                else:
-                    self.on_iteration(iteration_count, messages)
+            await self._invoke_on_iteration(iteration_count, messages)
 
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
                 if self.on_max_iterations == "return_last":
@@ -379,6 +382,22 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     termination_reason = "max_iterations reached → synthesised final response"
                     
                     content = final_resp.choices[0].message.content or last_response
+                    
+                    final_content = content
+                    final_reasoning = getattr(final_resp.choices[0].message, "reasoning_content", None)
+                    if not final_reasoning and final_content:
+                        import re
+                        match = re.search(r"<think>(.*?)</think>", final_content, re.DOTALL)
+                        if match:
+                            final_reasoning = match.group(1).strip()
+                            final_content = re.sub(r"<think>.*?</think>", "", final_content, flags=re.DOTALL).strip()
+                            content = final_content
+
+                    final_message = {"role": "assistant", "content": final_content}
+                    if final_reasoning:
+                        final_message["reasoning_content"] = final_reasoning
+                    messages.append(final_message)
+
                     structured_obj = None
                     if self.response_schema and content:
                         try:
@@ -403,6 +422,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         response="Agent stopped: Max iterations reached.",
                         tool_calls_made=tool_call_count
                     )
+
+                await self._invoke_on_iteration(iteration_count, messages)
 
                 if self.debug:
                     _print_debug_report(
@@ -449,27 +470,38 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             message = response.choices[0].message
             message = self._parse_message(message)
 
+            content = message.content or ""
+            reasoning = getattr(message, "reasoning_content", None)
+            if not reasoning and content:
+                import re
+                match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                if match:
+                    reasoning = match.group(1).strip()
+                    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
             # Track the last text produced by the LLM (used by on_max_iterations="return_last").
-            if message.content:
-                last_response = message.content
+            if content:
+                last_response = content
 
             # Build the assistant message dict manually: model_dump() deserialises
             # `arguments` into a dict, corrupting the history (the API requires
             # arguments to be a JSON string).
-            assistant_message: Dict[str, Any] = {"role": "assistant", "content": message.content}
+            assistant_message: Dict[str, Any] = {"role": "assistant", "content": content}
             if message.tool_calls:
                 assistant_message["tool_calls"] = [
                     {"id": tc.id, "type": "function",
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                     for tc in message.tool_calls
                 ]
+            if reasoning:
+                assistant_message["reasoning_content"] = reasoning
             messages.append(assistant_message)
 
             # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
                 termination_reason = "model returned a final text response (no tool calls)"
                 
-                content = message.content or ""
+                content = content
                 structured_obj = None
                 if self.response_schema:
                     try:
@@ -502,6 +534,22 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         
                         await self._emit_token_usage(final_resp, step=iteration_count)
                         content = final_resp.choices[0].message.content or ""
+                        
+                        final_content = content
+                        final_reasoning = getattr(final_resp.choices[0].message, "reasoning_content", None)
+                        if not final_reasoning and final_content:
+                            import re
+                            match = re.search(r"<think>(.*?)</think>", final_content, re.DOTALL)
+                            if match:
+                                final_reasoning = match.group(1).strip()
+                                final_content = re.sub(r"<think>.*?</think>", "", final_content, flags=re.DOTALL).strip()
+                                content = final_content
+                        
+                        # Update assistant message in messages history
+                        messages[-1]["content"] = final_content
+                        if final_reasoning:
+                            messages[-1]["reasoning_content"] = final_reasoning
+
                         try:
                             clean_content = content.strip()
                             if clean_content.startswith("```json"):
@@ -518,6 +566,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     tool_calls_made=tool_call_count,
                     structured_output=structured_obj,
                 )
+                
+                await self._invoke_on_iteration(iteration_count, messages)
+
                 if self.debug:
                     _print_debug_report(
                         agent_name=self.name,
@@ -549,6 +600,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     })
                     if function_name in self.termination_tools:
                         termination_reason = f"termination tool '{function_name}' not found"
+                        await self._invoke_on_iteration(iteration_count, messages)
                         if self.debug:
                             _print_debug_report(
                                 agent_name=self.name,
@@ -592,6 +644,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
                 if function_name in self.termination_tools:
                     termination_reason = f"termination tool '{function_name}' executed"
+                    await self._invoke_on_iteration(iteration_count, messages)
                     if self.debug:
                         _print_debug_report(
                             agent_name=self.name,
@@ -635,6 +688,21 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 termination_reason = f"max_tool_calls ({self.max_tool_calls}) reached → forced final response"
                 
                 content = final_response.choices[0].message.content or ""
+                final_content = content
+                final_reasoning = getattr(final_response.choices[0].message, "reasoning_content", None)
+                if not final_reasoning and final_content:
+                    import re
+                    match = re.search(r"<think>(.*?)</think>", final_content, re.DOTALL)
+                    if match:
+                        final_reasoning = match.group(1).strip()
+                        final_content = re.sub(r"<think>.*?</think>", "", final_content, flags=re.DOTALL).strip()
+                        content = final_content
+
+                final_message = {"role": "assistant", "content": final_content}
+                if final_reasoning:
+                    final_message["reasoning_content"] = final_reasoning
+                messages.append(final_message)
+
                 structured_obj = None
                 if self.response_schema and content:
                     try:
@@ -653,6 +721,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     tool_calls_made=tool_call_count,
                     structured_output=structured_obj,
                 )
+                
+                await self._invoke_on_iteration(iteration_count, messages)
+
                 if self.debug:
                     _print_debug_report(
                         agent_name=self.name,

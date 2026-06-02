@@ -147,10 +147,12 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         output = await agent.run(AgentInput(prompt="Test sync callback"))
 
         self.assertEqual(output.response, "Hello from MemGPT!")
-        self.assertEqual(iterations_called, [0])
-        self.assertEqual(len(messages_called), 1)
+        self.assertEqual(iterations_called, [0, 1])
+        self.assertEqual(len(messages_called), 2)
         self.assertEqual(messages_called[0][-1]["role"], "user")
         self.assertEqual(messages_called[0][-1]["content"], "Test sync callback")
+        self.assertEqual(messages_called[1][-2]["role"], "assistant")
+        self.assertEqual(messages_called[1][-1]["role"], "tool")
 
     @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
     async def test_memgpt_on_iteration_async(self, mock_acompletion):
@@ -177,8 +179,8 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         output = await agent.run(AgentInput(prompt="Test async callback"))
 
         self.assertEqual(output.response, "Async dynamic reply")
-        self.assertEqual(iterations_called, [0])
-        self.assertEqual(len(messages_called), 1)
+        self.assertEqual(iterations_called, [0, 1])
+        self.assertEqual(len(messages_called), 2)
 
     @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
     async def test_memgpt_on_iteration_multiple_heartbeats(self, mock_acompletion):
@@ -211,7 +213,7 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
 
         output = await agent.run(AgentInput(prompt="Two steps"))
 
-        self.assertEqual(iterations_called, [0, 1])
+        self.assertEqual(iterations_called, [0, 1, 2])
         self.assertEqual(output.tool_calls_made, 2)
 
 

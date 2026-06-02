@@ -56,6 +56,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
     model_config = {"arbitrary_types_allowed": True}
 
+    async def _invoke_on_iteration(self, iteration: int, messages: List[Dict[str, Any]]) -> None:
+        if self.on_iteration:
+            if inspect.iscoroutinefunction(self.on_iteration):
+                await self.on_iteration(iteration, messages)
+            else:
+                self.on_iteration(iteration, messages)
+
     async def _emit_token_usage(self, response: Any, step: int) -> None:
         usage = getattr(response, "usage", None)
         record = TokenUsage(
@@ -267,11 +274,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             else:
                 kwargs["tool_choice"] = "auto"
 
-            if self.on_iteration:
-                if inspect.iscoroutinefunction(self.on_iteration):
-                    await self.on_iteration(heartbeats_used, messages)
-                else:
-                    self.on_iteration(heartbeats_used, messages)
+            await self._invoke_on_iteration(heartbeats_used, messages)
 
             if self.use_shared_router:
                 router = _get_shared_router(self.model)
@@ -282,13 +285,24 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             await self._emit_token_usage(response, step=heartbeats_used)
             message = response.choices[0].message
             
-            assistant_msg_raw = {"role": "assistant", "content": message.content}
+            content = message.content or ""
+            reasoning = getattr(message, "reasoning_content", None)
+            if not reasoning and content:
+                import re
+                match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                if match:
+                    reasoning = match.group(1).strip()
+                    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+            assistant_msg_raw = {"role": "assistant", "content": content}
             if message.tool_calls:
                 assistant_msg_raw["tool_calls"] = [
                     {"id": tc.id, "type": "function",
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                     for tc in message.tool_calls
                 ]
+            if reasoning:
+                assistant_msg_raw["reasoning_content"] = reasoning
             
             self.internal_history.append(assistant_msg_raw)
             messages.append(assistant_msg_raw)
@@ -301,7 +315,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 # Reuse the shared, well-tested recovery parser (_json_to_tool_calls)
                 # rather than a bespoke inline one: it validates names against the
                 # tools actually registered on this block, so it never invents a tool.
-                parsed_tc = self._recover_tool_call_from_text(message.content, agent_tools)
+                parsed_tc = self._recover_tool_call_from_text(content, agent_tools)
 
                 if parsed_tc:
                     message.tool_calls = [parsed_tc]
@@ -490,4 +504,5 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 termination_reason=termination_reason,
                 elapsed_seconds=time.monotonic() - start_time,
             )
+        await self._invoke_on_iteration(heartbeats_used, messages)
         return output
