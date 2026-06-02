@@ -122,6 +122,98 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         # Should take 2 calls: one for the heartbeat iteration, one for the final schema formatting fallback
         self.assertEqual(mock_acompletion.call_count, 2)
 
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_memgpt_on_iteration_sync(self, mock_acompletion):
+        """Test MemGPT with a synchronous on_iteration callback."""
+        tool_args = json.dumps({"message": "Hello from MemGPT!", "request_heartbeat": False})
+        mock_tc = MockToolCall(call_id="call_123", name="send_message", arguments=tool_args)
+        mock_acompletion.return_value = MockResponse(content=None, tool_calls=[mock_tc])
+
+        iterations_called = []
+        messages_called = []
+
+        def sync_callback(iteration: int, messages: list):
+            iterations_called.append(iteration)
+            messages_called.append(list(messages))
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTSyncCallback",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            on_iteration=sync_callback,
+            debug=False
+        )
+
+        output = await agent.run(AgentInput(prompt="Test sync callback"))
+
+        self.assertEqual(output.response, "Hello from MemGPT!")
+        self.assertEqual(iterations_called, [0])
+        self.assertEqual(len(messages_called), 1)
+        self.assertEqual(messages_called[0][-1]["role"], "user")
+        self.assertEqual(messages_called[0][-1]["content"], "Test sync callback")
+
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_memgpt_on_iteration_async(self, mock_acompletion):
+        """Test MemGPT with an asynchronous on_iteration callback."""
+        tool_args = json.dumps({"message": "Async dynamic reply", "request_heartbeat": False})
+        mock_tc = MockToolCall(call_id="call_123", name="send_message", arguments=tool_args)
+        mock_acompletion.return_value = MockResponse(content=None, tool_calls=[mock_tc])
+
+        iterations_called = []
+        messages_called = []
+
+        async def async_callback(iteration: int, messages: list):
+            iterations_called.append(iteration)
+            messages_called.append(list(messages))
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTAsyncCallback",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            on_iteration=async_callback,
+            debug=False
+        )
+
+        output = await agent.run(AgentInput(prompt="Test async callback"))
+
+        self.assertEqual(output.response, "Async dynamic reply")
+        self.assertEqual(iterations_called, [0])
+        self.assertEqual(len(messages_called), 1)
+
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_memgpt_on_iteration_multiple_heartbeats(self, mock_acompletion):
+        """Test MemGPT on_iteration callback with multiple heartbeats."""
+        # Heartbeat 0: request_heartbeat=True
+        tool_args_0 = json.dumps({"message": "Thinking...", "request_heartbeat": True})
+        mock_tc_0 = MockToolCall(call_id="call_0", name="send_message", arguments=tool_args_0)
+        
+        # Heartbeat 1: request_heartbeat=False
+        tool_args_1 = json.dumps({"message": "Done!", "request_heartbeat": False})
+        mock_tc_1 = MockToolCall(call_id="call_1", name="send_message", arguments=tool_args_1)
+
+        mock_acompletion.side_effect = [
+            MockResponse(content=None, tool_calls=[mock_tc_0]),
+            MockResponse(content=None, tool_calls=[mock_tc_1])
+        ]
+
+        iterations_called = []
+
+        def callback(iteration: int, messages: list):
+            iterations_called.append(iteration)
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTMultiHeartbeat",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            on_iteration=callback,
+            debug=False
+        )
+
+        output = await agent.run(AgentInput(prompt="Two steps"))
+
+        self.assertEqual(iterations_called, [0, 1])
+        self.assertEqual(output.tool_calls_made, 2)
+
 
 from agenticblocks.core.function_block import as_tool
 

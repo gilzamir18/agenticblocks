@@ -3,7 +3,7 @@ import time
 import inspect
 from collections import defaultdict
 from pydantic import Field, BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import litellm
 
 from agenticblocks.core.agent import AgentBlock
@@ -45,6 +45,10 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     debug: bool = False
     use_shared_router: bool = True
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    on_iteration: Optional[Callable[[int, List[Dict[str, Any]]], Any]] = None
+    """Optional callback invoked at the start of each loop iteration for debugging. 
+    Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     # Memória de estado persistente do agente
     internal_history: List[Dict[str, Any]] = Field(default_factory=list)
@@ -262,7 +266,13 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 })
             else:
                 kwargs["tool_choice"] = "auto"
-                
+
+            if self.on_iteration:
+                if inspect.iscoroutinefunction(self.on_iteration):
+                    await self.on_iteration(heartbeats_used, messages)
+                else:
+                    self.on_iteration(heartbeats_used, messages)
+
             if self.use_shared_router:
                 router = _get_shared_router(self.model)
                 response = await router.acompletion(model=self.model, messages=messages, **kwargs)
