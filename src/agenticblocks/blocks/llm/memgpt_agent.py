@@ -1,10 +1,12 @@
 import json
+import re
 import time
 import inspect
 from collections import defaultdict
 from pydantic import Field, BaseModel
 from typing import List, Dict, Any, Optional, Callable
 import litellm
+from litellm.integrations.custom_logger import CustomLogger as _LiteLLMCustomLogger
 
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.blocks.llm.agent import (
@@ -49,6 +51,12 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """Optional callback invoked at the start of each loop iteration for debugging. 
     Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
     Can be a synchronous or asynchronous function."""
+    on_thinking: Optional[Callable[[str], Any]] = None
+    """Optional callback invoked after each LLM heartbeat call with the model's reasoning content.
+    Fires once per heartbeat (not per-token) with the full reasoning text for that call.
+    Supports native reasoning_content (DeepSeek, Claude) and inline <think> tags (Qwen3).
+    Signature: `def callback(chunk: str) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     # Memória de estado persistente do agente
     internal_history: List[Dict[str, Any]] = Field(default_factory=list)
@@ -62,6 +70,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 await self.on_iteration(iteration, messages)
             else:
                 self.on_iteration(iteration, messages)
+
+    async def _invoke_on_thinking(self, chunk: str) -> None:
+        if self.on_thinking and chunk:
+            if inspect.iscoroutinefunction(self.on_thinking):
+                await self.on_thinking(chunk)
+            else:
+                self.on_thinking(chunk)
 
     async def _emit_token_usage(self, response: Any, step: int) -> None:
         usage = getattr(response, "usage", None)
@@ -200,6 +215,32 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
+        # ── Scoped on_thinking logger ────────────────────────────────────────
+        _prev_callbacks = list(litellm.callbacks)
+        if self.on_thinking:
+            _agent_self = self
+
+            class _ThinkingLogger(_LiteLLMCustomLogger):
+                async def async_log_success_event(
+                    self_log, kwargs, response_obj, start_time, end_time
+                ):
+                    try:
+                        if not (response_obj and getattr(response_obj, "choices", None)):
+                            return
+                        msg = response_obj.choices[0].message
+                        reasoning = getattr(msg, "reasoning_content", None)
+                        if not reasoning:
+                            content = getattr(msg, "content", None) or ""
+                            m = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                            reasoning = m.group(1).strip() if m else None
+                        if reasoning:
+                            await _agent_self._invoke_on_thinking(reasoning)
+                    except Exception:
+                        pass
+
+            litellm.callbacks = _prev_callbacks + [_ThinkingLogger()]
+        # ── End scoped logger setup ──────────────────────────────────────────
+
         agent_tools = self.tools.copy()
         
         @as_tool(name="send_message", description="Sends a message to the user. Set request_heartbeat=true if you want to perform more actions (like searching memory) before giving control back to the user.")
@@ -220,7 +261,8 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         
         final_system_prompt = self._build_system_prompt()
 
-        while True:
+        try:
+          while True:
             # --- Gerenciamento de Contexto (FIFO Queue & Summarization) ---
             messages = [
                 {"role": "system", "content": final_system_prompt},
@@ -434,6 +476,10 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             if heartbeats_used >= self.max_heartbeats:
                 termination_reason = f"max_heartbeats ({self.max_heartbeats}) reached"
                 break
+        finally:
+            # Always restore litellm.callbacks to its pre-run state,
+            # regardless of how the heartbeat loop exits (return or exception).
+            litellm.callbacks = _prev_callbacks
 
         if self.response_mode == "last":
             final_text = accumulated_responses[-1] if accumulated_responses else ""

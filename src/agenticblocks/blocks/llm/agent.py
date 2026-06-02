@@ -2,10 +2,12 @@ import json
 import uuid
 import time
 import inspect
+import re
 from collections import defaultdict
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Callable
 import litellm
+from litellm.integrations.custom_logger import CustomLogger as _LiteLLMCustomLogger
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.core.block import Block
 from agenticblocks.tools.a2a_bridge import block_to_tool_schema
@@ -230,6 +232,12 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """Optional callback invoked after each LLM call with token statistics.
     Signature: `def callback(usage: TokenUsage) -> Any`.
     Can be a synchronous or asynchronous function."""
+    on_thinking: Optional[Callable[[str], Any]] = None
+    """Optional callback invoked after each LLM call with the model's reasoning content.
+    Fires once per LLM call (not per-token) with the full reasoning text for that call.
+    Supports native reasoning_content (DeepSeek, Claude) and inline <think> tags (Qwen3).
+    Signature: `def callback(chunk: str) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -239,6 +247,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 await self.on_iteration(iteration, messages)
             else:
                 self.on_iteration(iteration, messages)
+
+    async def _invoke_on_thinking(self, chunk: str) -> None:
+        if self.on_thinking and chunk:
+            if inspect.iscoroutinefunction(self.on_thinking):
+                await self.on_thinking(chunk)
+            else:
+                self.on_thinking(chunk)
 
     def _parse_message(self, message: Any) -> Any:
         """Recover gemma4 JSON-as-text tool calls when tool_calls is empty."""
@@ -336,6 +351,35 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
+        # ── Scoped on_thinking logger ────────────────────────────────────────
+        # Register a LiteLLM CustomLogger for the duration of this run() call.
+        # It fires async_log_success_event after every LLM completion and extracts
+        # reasoning_content (or inline <think> tags) to invoke on_thinking.
+        _prev_callbacks = list(litellm.callbacks)
+        if self.on_thinking:
+            _agent_self = self
+
+            class _ThinkingLogger(_LiteLLMCustomLogger):
+                async def async_log_success_event(
+                    self_log, kwargs, response_obj, start_time, end_time
+                ):
+                    try:
+                        if not (response_obj and getattr(response_obj, "choices", None)):
+                            return
+                        msg = response_obj.choices[0].message
+                        reasoning = getattr(msg, "reasoning_content", None)
+                        if not reasoning:
+                            content = getattr(msg, "content", None) or ""
+                            m = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                            reasoning = m.group(1).strip() if m else None
+                        if reasoning:
+                            await _agent_self._invoke_on_thinking(reasoning)
+                    except Exception:
+                        pass
+
+            litellm.callbacks = _prev_callbacks + [_ThinkingLogger()]
+        # ── End scoped logger setup ──────────────────────────────────────────
+
         # Transparent A2A Bridging: convert any sub-block into the Tool API format.
         litellm_tools = [block_to_tool_schema(b) for b in self.tools]
 
@@ -351,7 +395,8 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         tool_usage: Dict[str, int] = defaultdict(int)
         termination_reason: str = "unknown"
 
-        while True:
+        try:
+          while True:
             await self._invoke_on_iteration(iteration_count, messages)
 
             if self.max_iterations is not None and iteration_count >= self.max_iterations:
@@ -735,3 +780,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         elapsed_seconds=time.monotonic() - start_time,
                     )
                 return output
+        finally:
+            # Always restore litellm.callbacks to its pre-run state,
+            # regardless of how the agent loop exits (return or exception).
+            litellm.callbacks = _prev_callbacks
