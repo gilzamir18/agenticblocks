@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from config import get_model, get_litellm_kwargs
+from config import get_model, get_model_kargs
 
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
@@ -46,7 +46,7 @@ async def main():
         max_iterations=3,
         debug=True,
         on_max_iterations="return_last",
-        litellm_kwargs=get_litellm_kwargs() | {"max_tokens":1500}
+        model_kargs=get_model_kargs() | {"max_tokens":1500}
     )
 
     # Combines the original research topic ({prompt}) with the report ({response}).
@@ -65,7 +65,7 @@ async def main():
         system_prompt="""You are an answer specialist. You will receive a research
                         topic and a detailed report. Produce a clear, direct answer 
                         to the topic in fluent prose based only on report. Answer in portuguese brazil.""",
-        litellm_kwargs={"temperature": 0.1, "num_ctx": 8192, "max_tokens":200},
+        model_kargs={"temperature": 0.1, "num_ctx": 8192, "max_tokens":200},
     )
 
     graph.add_sequence(

@@ -26,8 +26,8 @@
 
 model: ollama/granite4:latest
 
-# Optional LiteLLM keyword arguments forwarded to every agent.
+# Optional Model/LiteLLM keyword arguments forwarded to every agent.
 # These can still be overridden on a per-example basis.
-litellm_kwargs:
+model_kargs:
   temperature: 0.7
   num_ctx: 8000

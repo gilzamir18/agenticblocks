@@ -114,7 +114,7 @@ async def main():
         ),
         tools=[print_researcher_response],
         max_tool_calls=1,
-        litellm_kwargs={
+        model_kargs={
             "temperature": 0.7,
             # Force the agent to always call print_researcher_response
             "tool_choice": {"type": "function",

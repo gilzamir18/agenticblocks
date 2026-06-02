@@ -100,7 +100,7 @@ agent = LLMAgentBlock(
 
 - **Bounded tool loop**: `max_tool_calls` prevents runaway loops.
 - **A2A bridging**: sub-agents are called as tools transparently — the parent LLM receives only the text response, not raw JSON metadata.
-- **Connection Pooling**: Pass any `litellm_kwargs` (HTTP clients, timeouts, etc.) to optimize API performance.
+- **Connection Pooling**: Pass any `model_kargs` (HTTP clients, timeouts, etc.) to optimize API performance.
 - **Iteration Hooks**: Use the `on_iteration` parameter to inject callbacks that execute at the beginning of each loop iteration. These callbacks receive the current iteration number and the list of messages, allowing for real-time monitoring, logging, or dynamic prompt adjustments during the agent's execution.
 
 #### 6. Advanced Flow Control & Heuristics
@@ -220,7 +220,7 @@ O `LLMAgentBlock` abstrai e converte sub-blocos em ferramentas nativas (A2A). De
 
 - **`max_tool_calls`**: Limita o loop de ferramentas para evitar execuções infinitas.
 - **A2A transparente**: Agentes subordinados são chamados como ferramentas; o agente pai recebe apenas o texto da resposta, sem metadados JSON brutos.
-- **Connection Pooling**: Aceite sessões HTTP e parâmetros estendidos via `litellm_kwargs`.
+- **Connection Pooling**: Aceite sessões HTTP e parâmetros estendidos via `model_kargs`.
 
 #### 6. Controle de Fluxo Avançado & Heurísticas
 

@@ -2,12 +2,12 @@
 config.py — Central configuration loader for agenticblocks examples.
 
 Usage in any example:
-    from config import get_model, get_litellm_kwargs
+    from config import get_model, get_model_kargs
 
     agent = LLMAgentBlock(
         name="my_agent",
         model=get_model(),
-        litellm_kwargs=get_litellm_kwargs(),
+        model_kargs=get_model_kargs(),
     )
 
 Priority for model resolution:
@@ -18,6 +18,7 @@ Priority for model resolution:
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,22 @@ def get_model(fallback: str = _DEFAULT_MODEL) -> str:
     return _load_yaml().get("model", fallback)
 
 
+def get_model_kargs() -> dict[str, Any]:
+    """Return the ``model_kargs`` (or deprecated ``litellm_kwargs``) dict from config.yaml."""
+    cfg = _load_yaml()
+    return cfg.get("model_kargs", cfg.get("litellm_kwargs", {}))
+
+
 def get_litellm_kwargs() -> dict[str, Any]:
-    """Return the ``litellm_kwargs`` dict from config.yaml (empty dict if absent)."""
-    return _load_yaml().get("litellm_kwargs", {})
+    """Return the ``litellm_kwargs`` dict from config.yaml (empty dict if absent).
+
+    .. deprecated:: 1.0.0
+       Use ``get_model_kargs`` instead.
+    """
+    warnings.warn(
+        "get_litellm_kwargs() is deprecated and will be removed in a future release. "
+        "Use get_model_kargs() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return get_model_kargs()

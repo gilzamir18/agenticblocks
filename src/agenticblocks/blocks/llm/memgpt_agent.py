@@ -3,10 +3,9 @@ import re
 import time
 import inspect
 from collections import defaultdict
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, model_validator
 from typing import List, Dict, Any, Optional, Callable
 import litellm
-from litellm.integrations.custom_logger import CustomLogger as _LiteLLMCustomLogger
 
 from agenticblocks.core.agent import AgentBlock
 from agenticblocks.blocks.llm.agent import (
@@ -46,7 +45,30 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     'last' — return only the final send_message call, discarding intermediate ones."""
     debug: bool = False
     use_shared_router: bool = True
+    model_kargs: Dict[str, Any] = Field(default_factory=dict)
+    """LiteLLM/Model keyword arguments (HTTP clients, timeouts, temperature, etc.)."""
+    model_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    """Alias for model_kargs."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    """Deprecated: Use model_kargs instead."""
+    litellm_kargs: Dict[str, Any] = Field(default_factory=dict)
+    """Deprecated: Use model_kargs instead."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_model_kargs(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            val = None
+            for key in ["model_kargs", "model_kwargs", "litellm_kwargs", "litellm_kargs"]:
+                if key in data:
+                    val = data[key]
+                    break
+            if val is not None:
+                data["model_kargs"] = val
+                data["model_kwargs"] = val
+                data["litellm_kwargs"] = val
+                data["litellm_kargs"] = val
+        return data
     on_iteration: Optional[Callable[[int, List[Dict[str, Any]]], Any]] = None
     """Optional callback invoked at the start of each loop iteration for debugging. 
     Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
@@ -125,11 +147,10 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             "Crie um novo resumo conciso que incorpore as informações chave do resumo atual e das novas mensagens ejetadas."
         )
         try:
-            resp = await litellm.acompletion(
-                model=self.model,
-                messages=[{"role": "system", "content": "Você é um sumarizador conciso de conversas."},
-                          {"role": "user", "content": summary_prompt}],
-                **self.litellm_kwargs
+            resp = await self._acompletion(
+                [{"role": "system", "content": "Você é um sumarizador conciso de conversas."},
+                 {"role": "user", "content": summary_prompt}],
+                **self.model_kargs
             )
             return resp.choices[0].message.content or self.recursive_summary
         except Exception as e:
@@ -212,51 +233,39 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         tcs = _json_to_tool_calls(data, available)
         return tcs[0] if tcs else None
 
+    async def _acompletion(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+        """Single call site for LiteLLM completions.
+
+        When stream=True is present in kwargs the response is fully aggregated
+        via stream_chunk_builder before returning, so callers always receive a
+        plain ModelResponse regardless of streaming mode. Thinking chunks are
+        forwarded to on_thinking in real time during stream consumption.
+        """
+        streaming = kwargs.get("stream", False)
+        if streaming:
+            kwargs = {**kwargs, "stream_options": {"include_usage": True}}
+
+        if self.use_shared_router:
+            router = _get_shared_router(self.model)
+            response = await router.acompletion(model=self.model, messages=messages, **kwargs)
+        else:
+            response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
+
+        if streaming:
+            chunks = []
+            async for chunk in response:
+                chunks.append(chunk)
+                if self.on_thinking:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    rc = getattr(delta, "reasoning_content", None) if delta else None
+                    if rc:
+                        await self._invoke_on_thinking(rc)
+            response = litellm.stream_chunk_builder(chunks, messages=messages)
+
+        return response
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
-
-        # ── Scoped on_thinking logger ────────────────────────────────────────
-        _prev_callbacks = list(litellm.callbacks)
-        if self.on_thinking:
-            _agent_self = self
-
-            class _ThinkingLogger(_LiteLLMCustomLogger):
-                async def async_log_success_event(
-                    self_log, kwargs, response_obj, start_time, end_time
-                ):
-                    try:
-                        if not (response_obj and getattr(response_obj, "choices", None)):
-                            return
-                        msg = response_obj.choices[0].message
-                        reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
-                        if not reasoning:
-                            content = getattr(msg, "content", None) or ""
-                            tags = [
-                                ("<think>", "</think>"),
-                                ("<thought>", "</thought>"),
-                                ("<thinking>", "</thinking>"),
-                                ("<|thought|>", "<|/thought|>"),
-                                ("<|thinking|>", "<|/thinking|>"),
-                                ("[thought]", "[/thought]"),
-                                ("[thinking]", "[/thinking]"),
-                            ]
-                            for start_tag, end_tag in tags:
-                                if start_tag in content:
-                                    parts = content.split(start_tag, 1)
-                                    if len(parts) > 1:
-                                        body = parts[1]
-                                        if end_tag in body:
-                                            reasoning = body.split(end_tag, 1)[0].strip()
-                                        else:
-                                            reasoning = body.strip()
-                                        break
-                        if reasoning:
-                            await _agent_self._invoke_on_thinking(reasoning)
-                    except Exception:
-                        pass
-
-            litellm.callbacks = _prev_callbacks + [_ThinkingLogger()]
-        # ── End scoped logger setup ──────────────────────────────────────────
 
         agent_tools = self.tools.copy()
         
@@ -278,8 +287,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         
         final_system_prompt = self._build_system_prompt()
 
-        try:
-          while True:
+        while True:
             # --- Gerenciamento de Contexto (FIFO Queue & Summarization) ---
             messages = [
                 {"role": "system", "content": final_system_prompt},
@@ -321,7 +329,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
             # --- Execução do Turno ---
             heartbeats_left = self.max_heartbeats - heartbeats_used
-            kwargs = self.litellm_kwargs.copy()
+            kwargs = self.model_kargs.copy()
             kwargs["tools"] = litellm_tools
             
             if heartbeats_left <= 0:
@@ -335,15 +343,11 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
             await self._invoke_on_iteration(heartbeats_used, messages)
 
-            if self.use_shared_router:
-                router = _get_shared_router(self.model)
-                response = await router.acompletion(model=self.model, messages=messages, **kwargs)
-            else:
-                response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
+            response = await self._acompletion(messages, **kwargs)
 
             await self._emit_token_usage(response, step=heartbeats_used)
             message = response.choices[0].message
-            
+
             content = message.content or ""
             reasoning = getattr(message, "reasoning_content", None)
             if not reasoning and content:
@@ -352,6 +356,9 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 if match:
                     reasoning = match.group(1).strip()
                     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+            if not kwargs.get("stream", False):
+                await self._invoke_on_thinking(reasoning or "")
 
             assistant_msg_raw = {"role": "assistant", "content": content}
             if message.tool_calls:
@@ -493,11 +500,6 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             if heartbeats_used >= self.max_heartbeats:
                 termination_reason = f"max_heartbeats ({self.max_heartbeats}) reached"
                 break
-        finally:
-            # Always restore litellm.callbacks to its pre-run state,
-            # regardless of how the heartbeat loop exits (return or exception).
-            litellm.callbacks = _prev_callbacks
-
         if self.response_mode == "last":
             final_text = accumulated_responses[-1] if accumulated_responses else ""
         else:
@@ -514,7 +516,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 structured_obj = self.response_schema.model_validate_json(clean_content)
             except Exception:
                 # Fallback synthesis formatting call to force-convert conversations into the schema format
-                final_kwargs = self.litellm_kwargs.copy()
+                final_kwargs = self.model_kargs.copy()
                 final_kwargs.pop("tools", None)
                 final_kwargs.pop("tool_choice", None)
                 final_kwargs["response_format"] = self.response_schema
@@ -523,19 +525,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                 format_messages = messages + [format_msg]
 
                 try:
-                    if self.use_shared_router:
-                        router = _get_shared_router(self.model)
-                        final_resp = await router.acompletion(
-                            model=self.model,
-                            messages=format_messages,
-                            **final_kwargs
-                        )
-                    else:
-                        final_resp = await litellm.acompletion(
-                            model=self.model,
-                            messages=format_messages,
-                            **final_kwargs
-                        )
+                    final_resp = await self._acompletion(format_messages, **final_kwargs)
                     
                     await self._emit_token_usage(final_resp, step=heartbeats_used)
                     content = final_resp.choices[0].message.content or ""

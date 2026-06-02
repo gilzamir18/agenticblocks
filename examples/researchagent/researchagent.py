@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from config import get_model, get_litellm_kwargs
+from config import get_model, get_model_kargs
 
 from agenticblocks.core.graph import WorkflowGraph
 from agenticblocks.runtime.executor import WorkflowExecutor
@@ -38,7 +38,7 @@ async def main():
         max_iterations=3,
         debug=True,
         on_max_iterations="return_last",
-        litellm_kwargs=get_litellm_kwargs()
+        model_kargs=get_model_kargs()
     )
 
     graph.add_sequence(get_user_input, agent_block)

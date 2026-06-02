@@ -84,7 +84,7 @@ def print_researcher_response(response: str):
 
 Agora, dentro da nossa função principal, inicializamos o grafo e configuramos o nó central de inteligência: o `ObservableLLMAgent`. 
 
-Nesta configuração, instruímos explicitamente o modelo (neste caso, `ollama/mistral-nemo:latest`) a assumir a persona de um assistente de pesquisa e forçamos o uso da ferramenta de impressão usando os parâmetros de `litellm_kwargs`.
+Nesta configuração, instruímos explicitamente o modelo (neste caso, `ollama/mistral-nemo:latest`) a assumir a persona de um assistente de pesquisa e forçamos o uso da ferramenta de impressão usando os parâmetros de `model_kargs`.
 
 ```python
 async def main():
@@ -103,7 +103,7 @@ async def main():
         tools=[print_researcher_response],
         max_iterations=1,
         # Força o LLM a sempre utilizar a ferramenta para responder
-        litellm_kwargs={
+        model_kargs={
             "temperature": 0.7, 
             "tool_choice": {"type": "function", "function": {"name": "print_researcher_response"}}
         }

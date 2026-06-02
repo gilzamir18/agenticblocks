@@ -210,7 +210,7 @@ async def main():
             "5. Seja breve, amigável, em português brasileiro."
         ),
         tools=[print_agent_response],
-        litellm_kwargs={"temperature": 0.3},
+        model_kargs={"temperature": 0.3},
     )
 
     planner_agent = ObservableLLMAgent(
@@ -241,7 +241,7 @@ async def main():
         ),
         tools=[],
         max_iterations=1,
-        litellm_kwargs={"temperature": 0.0},
+        model_kargs={"temperature": 0.0},
     )
 
     plan_executor = PlanExecutorBlock(

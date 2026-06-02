@@ -108,7 +108,7 @@ async def main():
         ),
         tools=[],
         max_iterations=1,
-        litellm_kwargs={"temperature": 0.0},
+        model_kargs={"temperature": 0.0},
     )
 
     # ── Executor: receives briefing + observations, calls print_agent_response
@@ -118,7 +118,7 @@ async def main():
         system_prompt="Call 'print_agent_response' exactly once with your final answer.",
         tools=[print_agent_response],
         max_tool_calls=1,
-        litellm_kwargs={"temperature": 0.3},
+        model_kargs={"temperature": 0.3},
     )
 
     plan_executor = PlanExecutorBlock(

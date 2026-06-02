@@ -64,7 +64,7 @@ Now we create our LLM agent. The most important part here is the `tools` propert
         tools=mcp_tools_fetch + mcp_tools_search,
         max_iterations=10,
         on_max_iterations="return_last",
-        litellm_kwargs={"temperature": 0.7, "tool_choice": "auto", "num_ctx": 32000}
+        model_kargs={"temperature": 0.7, "tool_choice": "auto", "num_ctx": 32000}
     )
 ```
 
@@ -146,7 +146,7 @@ async def main():
         tools=mcp_tools_fetch + mcp_tools_search,
         max_iterations=10,
         on_max_iterations="return_last",
-        litellm_kwargs={"temperature": 0.7, "tool_choice": "auto", "num_ctx": 32000}
+        model_kargs={"temperature": 0.7, "tool_choice": "auto", "num_ctx": 32000}
     )
 
     graph.add_sequence(get_user_input, agent_block)

@@ -84,7 +84,7 @@ def print_researcher_response(response: str):
 
 Now, inside our main function, we initialize the graph and configure the central intelligence node: the `ObservableLLMAgent`.
 
-In this setup, we explicitly instruct the model (in this case, `ollama/mistral-nemo:latest`) to take on the persona of a research assistant and force the use of the print tool using `litellm_kwargs` parameters.
+In this setup, we explicitly instruct the model (in this case, `ollama/mistral-nemo:latest`) to take on the persona of a research assistant and force the use of the print tool using `model_kargs` parameters.
 
 ```python
 async def main():
@@ -103,7 +103,7 @@ async def main():
         tools=[print_researcher_response],
         max_iterations=1,
         # Forces the LLM to always use the tool to respond
-        litellm_kwargs={
+        model_kargs={
             "temperature": 0.7, 
             "tool_choice": {"type": "function", "function": {"name": "print_researcher_response"}}
         }

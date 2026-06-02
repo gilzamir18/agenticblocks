@@ -255,3 +255,22 @@ class TestLLMAgentBlock(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.response, expected_tool_output)
         self.assertEqual(mock_acompletion.call_count, 1)
 
+    def test_model_kargs_alias_resolution(self):
+        """Test that model_kargs, model_kwargs, litellm_kwargs, and litellm_kargs resolve and sync properly."""
+        agent1 = LLMAgentBlock(name="Agent1", model_kargs={"temperature": 0.1})
+        self.assertEqual(agent1.model_kargs, {"temperature": 0.1})
+        self.assertEqual(agent1.litellm_kwargs, {"temperature": 0.1})
+
+        agent2 = LLMAgentBlock(name="Agent2", model_kwargs={"temperature": 0.2})
+        self.assertEqual(agent2.model_kargs, {"temperature": 0.2})
+        self.assertEqual(agent2.litellm_kwargs, {"temperature": 0.2})
+
+        agent3 = LLMAgentBlock(name="Agent3", litellm_kwargs={"temperature": 0.3})
+        self.assertEqual(agent3.model_kargs, {"temperature": 0.3})
+        self.assertEqual(agent3.litellm_kwargs, {"temperature": 0.3})
+
+        agent4 = LLMAgentBlock(name="Agent4", litellm_kargs={"temperature": 0.4})
+        self.assertEqual(agent4.model_kargs, {"temperature": 0.4})
+        self.assertEqual(agent4.litellm_kwargs, {"temperature": 0.4})
+
+

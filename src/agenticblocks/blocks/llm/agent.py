@@ -4,7 +4,7 @@ import time
 import inspect
 import re
 from collections import defaultdict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional, Callable
 import litellm
 from litellm.integrations.custom_logger import CustomLogger as _LiteLLMCustomLogger
@@ -223,7 +223,30 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """When True, print a structured debug report at the end of each run."""
     use_shared_router: bool = True
     """When True, uses a shared litellm.Router for connection pooling."""
+    model_kargs: Dict[str, Any] = Field(default_factory=dict)
+    """LiteLLM/Model keyword arguments (HTTP clients, timeouts, temperature, etc.)."""
+    model_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    """Alias for model_kargs."""
     litellm_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    """Deprecated: Use model_kargs instead."""
+    litellm_kargs: Dict[str, Any] = Field(default_factory=dict)
+    """Deprecated: Use model_kargs instead."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_model_kargs(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            val = None
+            for key in ["model_kargs", "model_kwargs", "litellm_kwargs", "litellm_kargs"]:
+                if key in data:
+                    val = data[key]
+                    break
+            if val is not None:
+                data["model_kargs"] = val
+                data["model_kwargs"] = val
+                data["litellm_kwargs"] = val
+                data["litellm_kargs"] = val
+        return data
     on_iteration: Optional[Callable[[int, List[Dict[str, Any]]], Any]] = None
     """Optional callback invoked at the start of each loop iteration for debugging. 
     Signature: `def callback(iteration: int, messages: List[Dict[str, Any]]) -> Any`.
@@ -254,6 +277,36 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 await self.on_thinking(chunk)
             else:
                 self.on_thinking(chunk)
+
+    async def _acompletion(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+        """Single call site for LiteLLM completions.
+
+        When stream=True is present in kwargs the response is fully aggregated
+        via stream_chunk_builder before returning, so callers always receive a
+        plain ModelResponse regardless of streaming mode.
+        """
+        streaming = kwargs.get("stream", False)
+        if streaming:
+            kwargs = {**kwargs, "stream_options": {"include_usage": True}}
+
+        if self.use_shared_router:
+            router = _get_shared_router(self.model)
+            response = await router.acompletion(model=self.model, messages=messages, **kwargs)
+        else:
+            response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
+
+        if streaming:
+            chunks = []
+            async for chunk in response:
+                chunks.append(chunk)
+                if self.on_thinking:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    rc = getattr(delta, "reasoning_content", None) if delta else None
+                    if rc:
+                        await self._invoke_on_thinking(rc)
+            response = litellm.stream_chunk_builder(chunks, messages=messages)
+
+        return response
 
     def _parse_message(self, message: Any) -> Any:
         """Recover gemma4 JSON-as-text tool calls when tool_calls is empty."""
@@ -351,51 +404,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
-        # ── Scoped on_thinking logger ────────────────────────────────────────
-        # Register a LiteLLM CustomLogger for the duration of this run() call.
-        # It fires async_log_success_event after every LLM completion and extracts
-        # reasoning_content (or inline <think> tags) to invoke on_thinking.
         _prev_callbacks = list(litellm.callbacks)
-        if self.on_thinking:
-            _agent_self = self
-
-            class _ThinkingLogger(_LiteLLMCustomLogger):
-                async def async_log_success_event(
-                    self_log, kwargs, response_obj, start_time, end_time
-                ):
-                    try:
-                        if not (response_obj and getattr(response_obj, "choices", None)):
-                            return
-                        msg = response_obj.choices[0].message
-                        reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
-                        if not reasoning:
-                            content = getattr(msg, "content", None) or ""
-                            tags = [
-                                ("<think>", "</think>"),
-                                ("<thought>", "</thought>"),
-                                ("<thinking>", "</thinking>"),
-                                ("<|thought|>", "<|/thought|>"),
-                                ("<|thinking|>", "<|/thinking|>"),
-                                ("[thought]", "[/thought]"),
-                                ("[thinking]", "[/thinking]"),
-                            ]
-                            for start_tag, end_tag in tags:
-                                if start_tag in content:
-                                    parts = content.split(start_tag, 1)
-                                    if len(parts) > 1:
-                                        body = parts[1]
-                                        if end_tag in body:
-                                            reasoning = body.split(end_tag, 1)[0].strip()
-                                        else:
-                                            reasoning = body.strip()
-                                        break
-                        if reasoning:
-                            await _agent_self._invoke_on_thinking(reasoning)
-                    except Exception:
-                        pass
-
-            litellm.callbacks = _prev_callbacks + [_ThinkingLogger()]
-        # ── End scoped logger setup ──────────────────────────────────────────
 
         # Transparent A2A Bridging: convert any sub-block into the Tool API format.
         litellm_tools = [block_to_tool_schema(b) for b in self.tools]
@@ -421,7 +430,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     # Force a final LLM call without tools so the model synthesises
                     # the accumulated context. Synthesis instructions should live in
                     # the system_prompt — no extra message is injected here.
-                    final_kwargs = self.litellm_kwargs.copy()
+                    final_kwargs = self.model_kargs.copy()
                     final_kwargs.pop("tools", None)
                     final_kwargs.pop("tool_choice", None)
                     final_kwargs["system_prompt"] = self.synthesis_prompt
@@ -429,15 +438,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     if self.response_schema:
                         final_kwargs["response_format"] = self.response_schema
 
-                    if self.use_shared_router:
-                        router = _get_shared_router(self.model)
-                        final_resp = await router.acompletion(
-                            model=self.model, messages=messages, **final_kwargs
-                        )
-                    else:
-                        final_resp = await litellm.acompletion(
-                            model=self.model, messages=messages, **final_kwargs
-                        )
+                    final_resp = await self._acompletion(messages, **final_kwargs)
 
                     await self._emit_token_usage(final_resp, step=iteration_count)
 
@@ -503,7 +504,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
             # Build optional kwargs: include tools when available; block new tool
             # calls once the per-run limit has been reached.
-            kwargs = self.litellm_kwargs.copy()
+            kwargs = self.model_kargs.copy()
             if litellm_tools:
                 kwargs["tools"] = litellm_tools
                 kwargs["tool_choice"] = "none" if tool_call_count >= self.max_tool_calls else "auto"
@@ -513,19 +514,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 kwargs["response_format"] = self.response_schema
 
             # Main LiteLLM call.
-            if self.use_shared_router:
-                router = _get_shared_router(self.model)
-                response = await router.acompletion(
-                    model=self.model,
-                    messages=messages,
-                    **kwargs
-                )
-            else:
-                response = await litellm.acompletion(
-                    model=self.model,
-                    messages=messages,
-                    **kwargs
-                )
+            response = await self._acompletion(messages, **kwargs)
 
             await self._emit_token_usage(response, step=iteration_count)
 
@@ -540,6 +529,9 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 if match:
                     reasoning = match.group(1).strip()
                     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+            if not kwargs.get("stream", False):
+                await self._invoke_on_thinking(reasoning or "")
 
             # Track the last text produced by the LLM (used by on_max_iterations="return_last").
             if content:
@@ -575,25 +567,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         structured_obj = self.response_schema.model_validate_json(clean_content)
                     except Exception:
                         # Fallback synthesis formatting call to force-convert conversations into the schema format
-                        final_kwargs = self.litellm_kwargs.copy()
+                        final_kwargs = self.model_kargs.copy()
                         final_kwargs.pop("tools", None)
                         final_kwargs.pop("tool_choice", None)
                         final_kwargs["response_format"] = self.response_schema
                         
-                        if self.use_shared_router:
-                            router = _get_shared_router(self.model)
-                            final_resp = await router.acompletion(
-                                model=self.model,
-                                messages=messages,
-                                **final_kwargs
-                            )
-                        else:
-                            final_resp = await litellm.acompletion(
-                                model=self.model,
-                                messages=messages,
-                                **final_kwargs
-                            )
-                        
+                        final_resp = await self._acompletion(messages, **final_kwargs)
+
                         await self._emit_token_usage(final_resp, step=iteration_count)
                         content = final_resp.choices[0].message.content or ""
                         
@@ -726,24 +706,12 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             # This is necessary because some models (e.g. Ollama) ignore
             # tool_choice="none", causing an infinite loop.
             if tool_call_count >= self.max_tool_calls:
-                final_kwargs = self.litellm_kwargs.copy()
+                final_kwargs = self.model_kargs.copy()
                 final_kwargs.pop("tool_choice", None)
                 if self.response_schema:
                     final_kwargs["response_format"] = self.response_schema
 
-                if self.use_shared_router:
-                    router = _get_shared_router(self.model)
-                    final_response = await router.acompletion(
-                        model=self.model,
-                        messages=messages,
-                        **final_kwargs
-                    )
-                else:
-                    final_response = await litellm.acompletion(
-                        model=self.model,
-                        messages=messages,
-                        **final_kwargs
-                    )
+                final_response = await self._acompletion(messages, **final_kwargs)
 
                 await self._emit_token_usage(final_response, step=iteration_count)
 
