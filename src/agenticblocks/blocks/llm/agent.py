@@ -367,11 +367,28 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         if not (response_obj and getattr(response_obj, "choices", None)):
                             return
                         msg = response_obj.choices[0].message
-                        reasoning = getattr(msg, "reasoning_content", None)
+                        reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
                         if not reasoning:
                             content = getattr(msg, "content", None) or ""
-                            m = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
-                            reasoning = m.group(1).strip() if m else None
+                            tags = [
+                                ("<think>", "</think>"),
+                                ("<thought>", "</thought>"),
+                                ("<thinking>", "</thinking>"),
+                                ("<|thought|>", "<|/thought|>"),
+                                ("<|thinking|>", "<|/thinking|>"),
+                                ("[thought]", "[/thought]"),
+                                ("[thinking]", "[/thinking]"),
+                            ]
+                            for start_tag, end_tag in tags:
+                                if start_tag in content:
+                                    parts = content.split(start_tag, 1)
+                                    if len(parts) > 1:
+                                        body = parts[1]
+                                        if end_tag in body:
+                                            reasoning = body.split(end_tag, 1)[0].strip()
+                                        else:
+                                            reasoning = body.strip()
+                                        break
                         if reasoning:
                             await _agent_self._invoke_on_thinking(reasoning)
                     except Exception:
