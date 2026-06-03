@@ -285,6 +285,16 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         via stream_chunk_builder before returning, so callers always receive a
         plain ModelResponse regardless of streaming mode.
         """
+        # Filter reasoning_content from history to prevent models from seeing
+        # their own thinking/reflection blocks and getting stuck in loops.
+        cleaned_messages = []
+        for msg in messages:
+            m = msg.copy()
+            if "reasoning_content" in m:
+                m.pop("reasoning_content")
+            cleaned_messages.append(m)
+        messages = cleaned_messages
+
         streaming = kwargs.get("stream", False)
         if streaming:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}

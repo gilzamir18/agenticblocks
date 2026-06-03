@@ -178,7 +178,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
 ## CORE RULES
 1. **TOOL-ONLY INTERFACE**: You MUST NEVER reply with plain text. Your only way to communicate with the user is by calling the `send_message` tool.
-2. **HEARTBEATS**: Every tool you call consumes one 'heartbeat'. You can chain multiple tool calls (e.g., search memory, analyze, then send_message). If you use `send_message` and set `request_heartbeat=true`, you retain control to use more tools. If `false`, you yield control to the user.
+2. **HEARTBEATS**: Every tool you call consumes one 'heartbeat'. You can chain multiple tool calls (e.g., search memory, analyze, then send_message). If you use `send_message` and set `request_heartbeat=true`, you retain control to use more tools. If `false`, you yield control to the user. ALWAYS set `request_heartbeat=false` as soon as you have finished your task or answered the user's request. Do NOT request additional heartbeats if there is no immediate action left to perform.
 3. **MEMORY PRESSURE**: If you see a SYSTEM ALERT about Memory Pressure, your Main Context is almost full. Be concise and rely on memory tools instead of keeping everything in context.
 4. **NO HALLUCINATION**: If the user asks about past interactions or facts you don't know, ALWAYS use your memory tools to retrieve the information before answering.
 """
@@ -241,6 +241,16 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         plain ModelResponse regardless of streaming mode. Thinking chunks are
         forwarded to on_thinking in real time during stream consumption.
         """
+        # Filter reasoning_content from history to prevent models from seeing
+        # their own thinking/reflection blocks and getting stuck in loops.
+        cleaned_messages = []
+        for msg in messages:
+            m = msg.copy()
+            if "reasoning_content" in m:
+                m.pop("reasoning_content")
+            cleaned_messages.append(m)
+        messages = cleaned_messages
+
         streaming = kwargs.get("stream", False)
         if streaming:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}
