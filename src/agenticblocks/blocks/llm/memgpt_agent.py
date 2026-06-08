@@ -79,6 +79,10 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     Supports native reasoning_content (DeepSeek, Claude) and inline <think> tags (Qwen3).
     Signature: `def callback(chunk: str) -> Any`.
     Can be a synchronous or asynchronous function."""
+    on_chunk: Optional[Callable[[str], Any]] = None
+    """Optional callback invoked after each LLM call with standard content chunks.
+    Signature: `def callback(chunk: str) -> Any`.
+    Can be a synchronous or asynchronous function."""
 
     # Memória de estado persistente do agente
     internal_history: List[Dict[str, Any]] = Field(default_factory=list)
@@ -99,6 +103,13 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 await self.on_thinking(chunk)
             else:
                 self.on_thinking(chunk)
+
+    async def _invoke_on_chunk(self, chunk: str) -> None:
+        if self.on_chunk and chunk:
+            if inspect.iscoroutinefunction(self.on_chunk):
+                await self.on_chunk(chunk)
+            else:
+                self.on_chunk(chunk)
 
     async def _emit_token_usage(self, response: Any, step: int) -> None:
         usage = getattr(response, "usage", None)
@@ -265,11 +276,15 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
             chunks = []
             async for chunk in response:
                 chunks.append(chunk)
-                if self.on_thinking:
+                if self.on_thinking or self.on_chunk:
                     delta = chunk.choices[0].delta if chunk.choices else None
-                    rc = getattr(delta, "reasoning_content", None) if delta else None
-                    if rc:
-                        await self._invoke_on_thinking(rc)
+                    if delta:
+                        rc = getattr(delta, "reasoning_content", None)
+                        if rc and self.on_thinking:
+                            await self._invoke_on_thinking(rc)
+                        content = getattr(delta, "content", None)
+                        if content and self.on_chunk:
+                            await self._invoke_on_chunk(content)
             response = litellm.stream_chunk_builder(chunks, messages=messages)
 
         return response
