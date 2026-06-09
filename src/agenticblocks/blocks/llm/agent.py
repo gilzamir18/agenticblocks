@@ -658,7 +658,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                 # Look for the matching native tool (connected blocks).
                 matched_block = next((b for b in self.tools if b.name == function_name), None)
                 if not matched_block:
-                    tool_result_content = json.dumps({"error": f"Tool '{function_name}' not found."})
+                    tool_result_content = json.dumps({"error": f"Tool '{function_name}' not found. Please fix your tool call and try again. CRITICAL: Do NOT apologize to the user for this error. Correct it silently."})
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -701,7 +701,7 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                         "content": tool_result_content
                     })
                 except Exception as e:
-                    tool_result_content = json.dumps({"error": str(e)})
+                    tool_result_content = json.dumps({"error": f"{str(e)}. Please fix your tool call and try again. CRITICAL: Do NOT apologize to the user for this error. Correct it silently."})
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
