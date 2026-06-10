@@ -196,17 +196,32 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         return self.system_prompt + memgpt_rules
 
     def _recover_tool_call_from_text(self, content: Optional[str], agent_tools: List[Block]) -> Any:
-        """Recover a tool call a model emitted as plain-text JSON (no native API).
-
-        Returns a single tool-call object (with .id / .function.name /
-        .function.arguments) or None. Delegates the shape handling to the shared
-        ``_json_to_tool_calls`` parser, which validates every tool name against the
-        tools actually registered on this block — so a hallucinated/unknown name is
-        rejected rather than invented.
-        """
+        """Recover a tool call a model emitted as plain-text JSON (no native API)."""
         if not content:
             return None
         content_str = content.strip()
+
+        import re
+        # Suporte para o formato de fine-tuning português do OpalaCoder:
+        # Decidi executar a ferramenta 'NOME' com os parâmetros: {"chave": "valor"}
+        custom_match = re.search(r"Decidi executar a ferramenta\s+'([^']+)'[^\{]*(\{.*\})", content_str, re.DOTALL)
+        if custom_match:
+            tool_name = custom_match.group(1).strip()
+            try:
+                args = json.loads(custom_match.group(2).strip(), strict=False)
+                # Verifica se a ferramenta existe no agente antes de aprovar
+                if any(b.name == tool_name for b in agent_tools):
+                    import time
+                    from litellm import Message
+                    from litellm.utils import Function
+                    tc = Message.ToolCall(
+                        id=f"call_{int(time.time()*1000)}",
+                        type="function",
+                        function=Function(name=tool_name, arguments=json.dumps(args))
+                    )
+                    return tc
+            except Exception:
+                pass
 
         # Strip markdown fences if the model wrapped the JSON.
         if "```json" in content_str:
@@ -252,13 +267,15 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         plain ModelResponse regardless of streaming mode. Thinking chunks are
         forwarded to on_thinking in real time during stream consumption.
         """
-        # Filter reasoning_content from history to prevent models from seeing
-        # their own thinking/reflection blocks and getting stuck in loops.
+        # Map reasoning_content back into the content so models can see their past thoughts.
         cleaned_messages = []
         for msg in messages:
             m = msg.copy()
             if "reasoning_content" in m:
-                m.pop("reasoning_content")
+                rc = m.pop("reasoning_content")
+                if rc and m.get("role") == "assistant":
+                    original_content = m.get("content", "")
+                    m["content"] = f"<think>\n{rc}\n</think>\n{original_content}"
             cleaned_messages.append(m)
         messages = cleaned_messages
 
