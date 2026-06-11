@@ -296,15 +296,13 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         via stream_chunk_builder before returning, so callers always receive a
         plain ModelResponse regardless of streaming mode.
         """
-        # Map reasoning_content back into the content so models can see their past thoughts.
+        # Filter reasoning_content from history to prevent models from seeing
+        # their own thinking/reflection blocks and getting stuck in loops.
         cleaned_messages = []
         for msg in messages:
             m = msg.copy()
             if "reasoning_content" in m:
-                rc = m.pop("reasoning_content")
-                if rc and m.get("role") == "assistant":
-                    original_content = m.get("content", "")
-                    m["content"] = f"<think>\n{rc}\n</think>\n{original_content}"
+                m.pop("reasoning_content")
             cleaned_messages.append(m)
         messages = cleaned_messages
 
@@ -345,28 +343,6 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             return message
 
         content_str = content.strip()
-
-        import re
-        # Suporte para o formato de fine-tuning português do OpalaCoder:
-        # Decidi executar a ferramenta 'NOME' com os parâmetros: {"chave": "valor"}
-        custom_match = re.search(r"Decidi executar a ferramenta\s+'([^']+)'[^\{]*(\{.*\})", content_str, re.DOTALL)
-        if custom_match:
-            tool_name = custom_match.group(1).strip()
-            try:
-                args = json.loads(custom_match.group(2).strip(), strict=False)
-                # Verifica se a ferramenta existe no agente antes de aprovar
-                if any(b.name == tool_name for b in self.tools):
-                    import time
-                    from litellm import Message
-                    from litellm.utils import Function
-                    tc = Message.ToolCall(
-                        id=f"call_{int(time.time()*1000)}",
-                        type="function",
-                        function=Function(name=tool_name, arguments=json.dumps(args))
-                    )
-                    return _DummyMessage([tc])
-            except Exception:
-                pass
 
         # Strip markdown fences
         if "```json" in content_str:
