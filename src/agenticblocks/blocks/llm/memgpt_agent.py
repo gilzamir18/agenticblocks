@@ -289,6 +289,18 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
         return response
 
+    def dump_state(self) -> Dict[str, Any]:
+        """Serialize the agent's internal state so it can be paused and persisted."""
+        return {
+            "internal_history": self.internal_history,
+            "recursive_summary": self.recursive_summary,
+        }
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        """Restore the agent's internal state from a serialized dictionary."""
+        self.internal_history = state.get("internal_history", [])
+        self.recursive_summary = state.get("recursive_summary", "Nenhum histórico removido ainda.")
+
     async def run(self, input: AgentInput) -> AgentOutput:
         start_time = time.monotonic()
 
