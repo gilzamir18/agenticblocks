@@ -578,6 +578,23 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
 
             # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
+                content_str = content.strip()
+                if content_str.startswith("{") and content_str.endswith("}"):
+                    err_msg = (
+                        "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. "
+                        "You MUST use the proper tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently.\n\n"
+                        "Example of a valid tool call:\n"
+                        "```json\n"
+                        "{\n"
+                        "  \"name\": \"send_message\",\n"
+                        "  \"arguments\": {\"message\": \"I am fixing my format now.\"}\n"
+                        "}\n"
+                        "```"
+                    )
+                    messages[-1]["content"] = "(removed: malformed tool call — use the native tool-calling API)"
+                    messages.append({"role": "user", "content": err_msg})
+                    continue
+
                 termination_reason = "model returned a final text response (no tool calls)"
                 
                 content = content
