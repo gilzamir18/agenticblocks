@@ -432,7 +432,17 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                     if message.content:
                         err_msg = "SYSTEM ALERT: You violated the tool-only rule. You MUST NOT reply with plain text. You must use the provided JSON tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently by returning a valid tool call."
                         if message.content.strip().startswith("{"):
-                            err_msg = "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. You MUST use the proper tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently."
+                            err_msg = (
+                                "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. "
+                                "You MUST use the proper tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently.\n\n"
+                                "Example of a valid tool call:\n"
+                                "```json\n"
+                                "{\n"
+                                "  \"name\": \"send_message\",\n"
+                                "  \"arguments\": {\"message\": \"I am fixing my format now.\"}\n"
+                                "}\n"
+                                "```"
+                            )
                             # Neutralize the malformed assistant message in history so the
                             # model does not see its own bad output and imitate it on the
                             # next iteration (a self-reinforcing text-JSON loop that would
