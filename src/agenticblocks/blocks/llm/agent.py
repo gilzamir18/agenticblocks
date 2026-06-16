@@ -14,17 +14,18 @@ from agenticblocks.tools.a2a_bridge import block_to_tool_schema
 from agenticblocks.runtime.state import TokenUsage, _current_ctx
 
 
-class _DummyFunction:
-    def __init__(self, name: str, arguments: str):
-        self.name = name
-        self.arguments = arguments
+class _DummyFunction(BaseModel):
+    name: str
+    arguments: str
 
 
-class _DummyToolCall:
-    def __init__(self, name: str, arguments: str):
-        self.id = f"call_{uuid.uuid4().hex[:10]}"
-        self.type = "function"
-        self.function = _DummyFunction(name, arguments)
+class _DummyToolCall(BaseModel):
+    id: str = Field(default_factory=lambda: f"call_{uuid.uuid4().hex[:10]}")
+    type: str = "function"
+    function: _DummyFunction
+
+    def __init__(self, name: str, arguments: str, **data):
+        super().__init__(function=_DummyFunction(name=name, arguments=arguments), **data)
 
 
 class _DummyMessage:
@@ -142,6 +143,8 @@ def _json_to_tool_calls(data: dict, available_tools: dict) -> list | None:
 
 class AgentInput(BaseModel):
     prompt: str
+    attachments: list = Field(default_factory=list)
+    """Optional list of attachment descriptors [{type, data, mime, name}] for multimodal messages."""
 
 class AgentOutput(BaseModel):
     response: str
@@ -310,11 +313,23 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         if streaming:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}
 
+        # ollama_chat/ uses Ollama's native /api/chat endpoint which does not support
+        # OpenAI-style image_url content parts. Fall back to ollama/ (OpenAI-compat)
+        # for any call that contains image data so vision works correctly.
+        effective_model = self.model
+        _has_images = any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in messages
+        )
+        if _has_images and effective_model.startswith("ollama_chat/"):
+            effective_model = "ollama/" + effective_model[len("ollama_chat/"):]
+
         if self.use_shared_router:
-            router = _get_shared_router(self.model)
-            response = await router.acompletion(model=self.model, messages=messages, **kwargs)
+            router = _get_shared_router(effective_model)
+            response = await router.acompletion(model=effective_model, messages=messages, **kwargs)
         else:
-            response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
+            response = await litellm.acompletion(model=effective_model, messages=messages, **kwargs)
 
         if streaming:
             chunks = []
@@ -434,9 +449,26 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         # Transparent A2A Bridging: convert any sub-block into the Tool API format.
         litellm_tools = [block_to_tool_schema(b) for b in self.tools]
 
+        # Build user content — plain string or multimodal list (vision models).
+        user_content: str | list = input.prompt
+        if input.attachments:
+            parts: list[dict] = [{"type": "text", "text": input.prompt}]
+            for att in input.attachments:
+                if att.get("type") == "image":
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{att['mime']};base64,{att['data']}"}
+                    })
+                elif att.get("type") == "pdf_text":
+                    parts.append({
+                        "type": "text",
+                        "text": f"\n\n[Content of attached file '{att['name']}']:\n{att['data']}"
+                    })
+            user_content = parts
+
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": input.prompt}
+            {"role": "user", "content": user_content}
         ]
 
         tool_call_count = 0

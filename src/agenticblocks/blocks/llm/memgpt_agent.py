@@ -266,11 +266,23 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         if streaming:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}
 
+        # ollama_chat/ uses Ollama's native /api/chat endpoint which does not support
+        # OpenAI-style image_url content parts. Fall back to ollama/ (OpenAI-compat)
+        # for the first call that contains image data so vision works correctly.
+        effective_model = self.model
+        _has_images = any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in messages
+        )
+        if _has_images and effective_model.startswith("ollama_chat/"):
+            effective_model = "ollama/" + effective_model[len("ollama_chat/"):]
+
         if self.use_shared_router:
-            router = _get_shared_router(self.model)
-            response = await router.acompletion(model=self.model, messages=messages, **kwargs)
+            router = _get_shared_router(effective_model)
+            response = await router.acompletion(model=effective_model, messages=messages, **kwargs)
         else:
-            response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
+            response = await litellm.acompletion(model=effective_model, messages=messages, **kwargs)
 
         if streaming:
             chunks = []
@@ -313,8 +325,24 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         agent_tools.append(send_message)
         litellm_tools = [block_to_tool_schema(b) for b in agent_tools]
 
+        # Build user content — plain string or multimodal list (vision models).
+        user_content: str | list = input.prompt
+        if input.attachments:
+            parts: list[dict] = [{"type": "text", "text": input.prompt}]
+            for att in input.attachments:
+                if att.get("type") == "image":
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{att['mime']};base64,{att['data']}"}
+                    })
+                elif att.get("type") == "pdf_text":
+                    parts.append({
+                        "type": "text",
+                        "text": f"\n\n[Content of attached file '{att['name']}']:\n{att['data']}"
+                    })
+            user_content = parts
         # Adiciona a entrada do usuário ao histórico interno
-        self.internal_history.append({"role": "user", "content": input.prompt})
+        self.internal_history.append({"role": "user", "content": user_content})
 
         heartbeats_used = 0
         tool_call_count = 0
