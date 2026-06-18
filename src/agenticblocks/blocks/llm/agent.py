@@ -224,6 +224,10 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     """Optional Pydantic model class to enforce a structured response schema."""
     debug: bool = False
     """When True, print a structured debug report at the end of each run."""
+    tool_role_workaround: Optional[str] = None
+    """Workaround for models (like some Ollama configurations) that silently drop or 
+    crash on 'role: tool' messages. When set (e.g. "user" or "assistant"), tool results
+    are rewritten to this role before being sent to the LLM, wrapped in a system marker."""
     use_shared_router: bool = True
     """When True, uses a shared litellm.Router for connection pooling."""
     model_kargs: Dict[str, Any] = Field(default_factory=dict)
@@ -301,11 +305,21 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
         """
         # Filter reasoning_content from history to prevent models from seeing
         # their own thinking/reflection blocks and getting stuck in loops.
+        # Also apply tool_role_workaround if enabled.
         cleaned_messages = []
         for msg in messages:
             m = msg.copy()
             if "reasoning_content" in m:
                 m.pop("reasoning_content")
+                
+            # Apply tool role workaround if specified
+            if self.tool_role_workaround and m.get("role") == "tool":
+                m["role"] = self.tool_role_workaround
+                m["content"] = f"[Result from tool '{m.get('name', 'unknown')}']\n{m.get('content', '')}"
+                # Must remove tool-exclusive fields otherwise litellm/OpenAI schema validation crashes
+                m.pop("tool_call_id", None)
+                m.pop("name", None)
+                
             cleaned_messages.append(m)
         messages = cleaned_messages
 
@@ -611,7 +625,16 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
             # If no tool call was requested, the agent has finished reasoning.
             if not message.tool_calls:
                 content_str = content.strip()
+                _looks_like_tool = False
                 if content_str.startswith("{") and content_str.endswith("}"):
+                    try:
+                        _data = json.loads(content_str)
+                        if isinstance(_data, dict) and any(k in _data for k in ["name", "tool_name", "function", "tool_calls"]):
+                            _looks_like_tool = True
+                    except Exception:
+                        pass
+                
+                if _looks_like_tool and not self.response_schema:
                     err_msg = (
                         "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. "
                         "You MUST use the proper tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently.\n\n"

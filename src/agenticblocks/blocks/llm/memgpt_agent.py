@@ -44,6 +44,9 @@ class MemGPTAgentBlock(AgentBlock[AgentInput, AgentOutput]):
     'all'  — concatenate every send_message call (default, original behaviour).
     'last' — return only the final send_message call, discarding intermediate ones."""
     debug: bool = False
+    tool_role_workaround: Optional[str] = None
+    """Workaround for models that silently drop or crash on 'role: tool' messages.
+    When set (e.g. "assistant"), tool results are rewritten to this role."""
     use_shared_router: bool = True
     model_kargs: Dict[str, Any] = Field(default_factory=dict)
     """LiteLLM/Model keyword arguments (HTTP clients, timeouts, temperature, etc.)."""
@@ -254,11 +257,21 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
         """
         # Filter reasoning_content from history to prevent models from seeing
         # their own thinking/reflection blocks and getting stuck in loops.
+        # Also apply tool_role_workaround if enabled.
         cleaned_messages = []
         for msg in messages:
             m = msg.copy()
             if "reasoning_content" in m:
                 m.pop("reasoning_content")
+                
+            # Apply tool role workaround if specified
+            if getattr(self, "tool_role_workaround", None) and m.get("role") == "tool":
+                m["role"] = self.tool_role_workaround
+                m["content"] = f"[Result from tool '{m.get('name', 'unknown')}']\n{m.get('content', '')}"
+                # Must remove tool-exclusive fields otherwise litellm/OpenAI schema validation crashes
+                m.pop("tool_call_id", None)
+                m.pop("name", None)
+                
             cleaned_messages.append(m)
         messages = cleaned_messages
 
@@ -458,7 +471,18 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                     messages[-1] = assistant_msg_raw
                 else:
                     if message.content:
-                        err_msg = "SYSTEM ALERT: You violated the tool-only rule. You MUST NOT reply with plain text. You must use the provided JSON tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently by returning a valid tool call."
+                        err_msg = (
+                            "SYSTEM ALERT: You violated the tool-only rule. You MUST NOT reply with plain text. "
+                            "You must use the provided JSON tool calling API. CRITICAL: Do NOT apologize to the user for this error. "
+                            "Correct it silently by returning a valid tool call.\n\n"
+                            "Example of a valid tool call:\n"
+                            "```json\n"
+                            "{\n"
+                            "  \"name\": \"send_message\",\n"
+                            "  \"arguments\": {\"message\": \"I am fixing my format now.\"}\n"
+                            "}\n"
+                            "```"
+                        )
                         if message.content.strip().startswith("{"):
                             err_msg = (
                                 "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. "
@@ -550,7 +574,12 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                         args_dict = json.loads(tool_call.function.arguments)
                         input_model = matched_block.input_schema()(**args_dict)
                         result = await matched_block.run(input=input_model)
-                        content_str = json.dumps(result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result)
+                        if hasattr(result, "model_dump"):
+                            content_str = json.dumps(result.model_dump(exclude_none=True))
+                        elif isinstance(result, str):
+                            content_str = result
+                        else:
+                            content_str = json.dumps(result)
                         
                         hb_left = self.max_heartbeats - heartbeats_used
                         sys_msg = f"\n[System: You have {hb_left} heartbeats remaining."
