@@ -638,11 +638,12 @@ class LLMAgentBlock(AgentBlock[AgentInput, AgentOutput]):
                     err_msg = (
                         "SYSTEM ALERT: You replied with a JSON string in plain text that is not a valid tool call. "
                         "You MUST use the proper tool calling API. CRITICAL: Do NOT apologize to the user for this error. Correct it silently.\n\n"
-                        "Example of a valid tool call:\n"
+                        "If you need to talk to the user and end the turn, use send_message, otherwise make a tool call.\n"
+                        "Example of a generic tool call:\n"
                         "```json\n"
                         "{\n"
-                        "  \"name\": \"send_message\",\n"
-                        "  \"arguments\": {\"message\": \"I am fixing my format now.\"}\n"
+                        "  \"name\": \"tool_name_here\",\n"
+                        "  \"arguments\": {\"param\": \"value\"}\n"
                         "}\n"
                         "```"
                     )
