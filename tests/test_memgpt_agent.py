@@ -216,6 +216,40 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(iterations_called, [0, 1, 2])
         self.assertEqual(output.tool_calls_made, 2)
 
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_empty_send_message_does_not_terminate_turn(self, mock_acompletion):
+        """An empty send_message must be corrected instead of becoming an empty final response."""
+        empty_args = json.dumps({"message": "", "request_heartbeat": False})
+        empty_tc = MockToolCall(call_id="call_empty", name="send_message", arguments=empty_args)
+
+        final_args = json.dumps({"message": "Corrected response.", "request_heartbeat": False})
+        final_tc = MockToolCall(call_id="call_final", name="send_message", arguments=final_args)
+
+        mock_acompletion.side_effect = [
+            MockResponse(content=None, tool_calls=[empty_tc]),
+            MockResponse(content=None, tool_calls=[final_tc]),
+        ]
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTEmptySendMessage",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            debug=False,
+        )
+
+        output = await agent.run(AgentInput(prompt="Return a real answer"))
+
+        self.assertEqual(output.response, "Corrected response.")
+        self.assertEqual(output.tool_calls_made, 2)
+        self.assertEqual(mock_acompletion.call_count, 2)
+        self.assertTrue(
+            any(
+                item["role"] == "user"
+                and "send_message with an empty message" in item["content"]
+                for item in agent.internal_history
+            )
+        )
+
 
 from agenticblocks.core.function_block import as_tool
 

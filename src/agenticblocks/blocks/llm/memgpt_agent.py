@@ -523,6 +523,7 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
 
             heartbeats_used += 1
             wants_heartbeat = False
+            empty_send_message_violation = False
             
             for tool_call in message.tool_calls:
                 tool_call_count += 1
@@ -545,8 +546,37 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                     try:
                         args = json.loads(tool_call.function.arguments)
                         msg_text = args.get("message", "")
-                        if msg_text:
+                        if isinstance(msg_text, str) and msg_text.strip():
                             accumulated_responses.append(msg_text)
+                        else:
+                            empty_send_message_violation = True
+                            wants_heartbeat = True
+                            tool_result = {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": function_name,
+                                "content": json.dumps({
+                                    "error": (
+                                        "SYSTEM ALERT: send_message requires a non-empty message. "
+                                        "Correct this silently by calling send_message again with meaningful content. "
+                                        "Do not end the turn with an empty message."
+                                    )
+                                })
+                            }
+                            self.internal_history.append(tool_result)
+                            messages.append(tool_result)
+                            alert_msg = {
+                                "role": "user",
+                                "content": (
+                                    "SYSTEM ALERT: You called send_message with an empty message. "
+                                    "This is not a valid final response. You MUST call send_message again "
+                                    "with a non-empty message. CRITICAL: Do NOT apologize to the user for this error; "
+                                    "correct it silently."
+                                )
+                            }
+                            self.internal_history.append(alert_msg)
+                            messages.append(alert_msg)
+                            continue
                         
                         hb_req = args.get("request_heartbeat", False)
                         if hb_req: wants_heartbeat = True
@@ -598,6 +628,12 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                         err_res = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps({"error": str(e)})}
                         self.internal_history.append(err_res)
                         messages.append(err_res)
+
+            if empty_send_message_violation:
+                if heartbeats_used > self.max_heartbeats:
+                    termination_reason = "model repeatedly called send_message with empty message"
+                    break
+                continue
 
             if not wants_heartbeat:
                 termination_reason = "send_message called with request_heartbeat=false"
