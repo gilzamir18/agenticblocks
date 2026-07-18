@@ -251,6 +251,56 @@ class TestMemGPTAgentBlock(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_empty_response_retries_inside_heartbeat_loop(self, mock_acompletion):
+        """An empty model response should consume a heartbeat and retry in the same run."""
+        final_args = json.dumps({"message": "Recovered inside the heartbeat loop.", "request_heartbeat": False})
+        final_tc = MockToolCall(call_id="call_final", name="send_message", arguments=final_args)
+
+        mock_acompletion.side_effect = [
+            MockResponse(content="", tool_calls=[]),
+            MockResponse(content=None, tool_calls=[final_tc]),
+        ]
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTEmptyResponse",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            debug=False,
+        )
+
+        output = await agent.run(AgentInput(prompt="Return a real answer"))
+
+        self.assertEqual(output.response, "Recovered inside the heartbeat loop.")
+        self.assertEqual(output.tool_calls_made, 1)
+        self.assertEqual(mock_acompletion.call_count, 2)
+        self.assertTrue(
+            any(
+                item["role"] == "user"
+                and "You returned an empty response without calling a tool" in item["content"]
+                for item in agent.internal_history
+            )
+        )
+
+    @patch("agenticblocks.blocks.llm.memgpt_agent.litellm.acompletion")
+    async def test_empty_response_does_not_retry_when_heartbeats_are_zero(self, mock_acompletion):
+        """With a zero heartbeat budget, an empty model response still ends the run."""
+        mock_acompletion.return_value = MockResponse(content="", tool_calls=[])
+
+        agent = MemGPTAgentBlock(
+            name="MemGPTZeroHeartbeats",
+            model="ollama/gemma4:latest",
+            use_shared_router=False,
+            max_heartbeats=0,
+            debug=False,
+        )
+
+        output = await agent.run(AgentInput(prompt="Return a real answer"))
+
+        self.assertEqual(output.response, "")
+        self.assertEqual(mock_acompletion.call_count, 1)
+
+
 from agenticblocks.core.function_block import as_tool
 
 

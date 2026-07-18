@@ -518,8 +518,30 @@ You are running on an OS-like MemGPT architecture. You have a limited Main Conte
                             break
                         continue
                     else:
-                        termination_reason = "model returned empty response"
-                        break
+                        if heartbeats_left <= 0 or self.max_heartbeats <= 0:
+                            termination_reason = "model returned empty response with no heartbeats remaining"
+                            break
+
+                        _neutralized = {
+                            "role": "assistant",
+                            "content": "(removed: empty response - use send_message or another tool call)",
+                        }
+                        self.internal_history[-1] = _neutralized
+                        messages[-1] = _neutralized
+                        self.internal_history.append({
+                            "role": "user",
+                            "content": (
+                                "SYSTEM ALERT: You returned an empty response without calling a tool. "
+                                "This turn is not finished. You MUST now call send_message with "
+                                "request_heartbeat=false to answer the user, or call another tool if "
+                                "one is still required. Do not return plain text or an empty message."
+                            ),
+                        })
+                        heartbeats_used += 1
+                        if heartbeats_used >= self.max_heartbeats:
+                            termination_reason = f"max_heartbeats ({self.max_heartbeats}) reached after empty-response correction"
+                            break
+                        continue
 
             heartbeats_used += 1
             wants_heartbeat = False
